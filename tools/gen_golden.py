@@ -115,7 +115,7 @@ def build_tokenizer(args: argparse.Namespace):
 
 def case_identifier(base: Path, path: Path) -> str:
     try:
-        return str(path.relative_to(base))
+        return path.relative_to(base).as_posix()
     except ValueError:
         return path.name
 
@@ -157,7 +157,7 @@ def generate_golden(args: argparse.Namespace) -> int:
             text = path.read_text(encoding="utf-8")
             record = {
                 "case": case_identifier(args.inputs, path),
-                "input_path": str(path),
+                "input_path": path.as_posix(),
                 "mode": args.mode,
                 "userdic": str(args.userdic) if args.userdic else None,
                 "userdic_type": (args.userdic_type or "ipadic") if args.userdic else None,

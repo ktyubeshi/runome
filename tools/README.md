@@ -4,6 +4,7 @@ Utility scripts and helper binaries that orchestrate the Janome compatibility wo
 
 - `gen_golden.py`: Generate golden outputs from Janome for inputs under `fixtures/`.
   - Requires `janome==0.5.0`.
+  - Walks every `*.txt` under the provided directory; keep fixture files curated to avoid bloating goldens.
   - Example: `python tools/gen_golden.py --inputs fixtures/cases --mode full`.
 - `run_diffcheck.rs` (planned): Optional Rust helper to compare Runome output against goldens without hitting the Python layer.
 

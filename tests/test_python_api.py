@@ -7,10 +7,14 @@ This test suite includes:
 3. API compatibility verification
 """
 
-import pytest
 import os
+from pathlib import Path
+
+import pytest
 from runome.tokenizer import Tokenizer, Token
 
+FIXTURES_ROOT = Path(__file__).resolve().parent.parent / "fixtures"
+USERDIC_DIR = FIXTURES_ROOT / "userdic"
 
 class TestBasicPythonBinding:
     """Test basic Python binding functionality."""
@@ -367,11 +371,10 @@ class TestUserDictionary:
 
     def setup_method(self):
         """Setup test data paths."""
-        test_dir = os.path.dirname(__file__)
-        self.user_ipadic_path = os.path.join(test_dir, "user_ipadic.csv")
-        self.user_simpledic_path = os.path.join(test_dir, "user_simpledic.csv")
-        self.user_ipadic_eucjp_path = os.path.join(test_dir, "user_ipadic_eucjp.csv")
-        self.user_ipadic_sjis_path = os.path.join(test_dir, "user_ipadic_sjis.csv")
+        self.user_ipadic_path = str(USERDIC_DIR / "user_ipadic.csv")
+        self.user_simpledic_path = str(USERDIC_DIR / "user_simpledic.csv")
+        self.user_ipadic_eucjp_path = str(USERDIC_DIR / "user_ipadic_eucjp.csv")
+        self.user_ipadic_sjis_path = str(USERDIC_DIR / "user_ipadic_sjis.csv")
 
     def test_user_dict_ipadic_creation(self):
         """Test creating tokenizer with IPADIC format user dictionary."""

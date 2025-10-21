@@ -10,9 +10,11 @@ This document mirrors the test-first recovery plan in `tmp/plan.md` and pinpoint
 
 ## Current Status
 
-- Fixtures now include `basic_sumomo.txt` plus a sample simple dictionary in `fixtures/userdic/`.
-- `tools/gen_golden.py` generates JSONL outputs (full or wakati) and enforces Janome `0.5.0` by default.
-- `tests/test_diff_golden.rs` loads `golden/janome_full.jsonl` and checks that Runome matches Janome for the seeded case (auto-skipping if the system dictionary is missing).
+- `fixtures/cases/` now contains `basic_sumomo.txt`, `text_lemon.txt`, `text_large.txt`, and `text_large_nonjp.txt`, providing both smoke and long-form corpora.
+- `fixtures/userdic/` mirrors the Janome sample dictionaries (IPADIC variants plus Simpledic) for compatibility checks.
+- `tools/gen_golden.py` generates JSONL outputs (full or wakati), normalises paths for cross-platform determinism, and enforces Janome `0.5.0` by default.
+- `golden/janome_full.jsonl` includes entries for every case under `fixtures/cases/`; additional files create new JSONL records automatically.
+- `tests/test_diff_golden.rs` loads the golden snapshot and checks that Runome matches Janome for the `basic_sumomo.txt` case (auto-skipping if the system dictionary is missing).
 - The remaining Rust/Python test files are still placeholders, each marked `#[ignore]` or `pytest.skip` until populated.
 - CI workflow is still pending; once in place it must install Janome, build Runome with the Python feature, and execute both Rust and Python suites.
 
