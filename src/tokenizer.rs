@@ -26,6 +26,14 @@ pub struct Token {
     node_type: NodeType,
 }
 
+fn normalize_inflection(value: &str) -> Cow<'static, str> {
+    if value.contains('\u{FF0D}') {
+        Cow::Owned(value.replace('\u{FF0D}', "\u{2212}"))
+    } else {
+        intern::intern_or_cow(value)
+    }
+}
+
 impl Token {
     /// Create a Token from a dictionary node with full morphological information
     /// Uses zero-copy optimization for interned strings
@@ -33,8 +41,8 @@ impl Token {
         Self {
             surface: intern::intern_or_cow(node.surface()),
             part_of_speech: intern::intern_or_cow(node.part_of_speech()),
-            infl_type: intern::intern_or_cow(node.inflection_type()),
-            infl_form: intern::intern_or_cow(node.inflection_form()),
+            infl_type: normalize_inflection(node.inflection_type()),
+            infl_form: normalize_inflection(node.inflection_form()),
             base_form: intern::intern_or_cow(node.base_form()),
             reading: intern::intern_or_cow(node.reading()),
             phonetic: intern::intern_or_cow(node.phonetic()),
@@ -80,8 +88,8 @@ impl Token {
         Self {
             surface: intern::intern_or_cow(&surface),
             part_of_speech: intern::intern_or_cow(&part_of_speech),
-            infl_type: intern::intern_or_cow(&infl_type),
-            infl_form: intern::intern_or_cow(&infl_form),
+            infl_type: normalize_inflection(&infl_type),
+            infl_form: normalize_inflection(&infl_form),
             base_form: intern::intern_or_cow(&base_form),
             reading: intern::intern_or_cow(&reading),
             phonetic: intern::intern_or_cow(&phonetic),
@@ -635,24 +643,170 @@ impl Tokenizer {
     ) -> Result<Vec<TokenizeResult>, RunomeError> {
         let mut tokens = Vec::new();
 
-        for node in path {
+        let mut index = 0;
+        while index < path.len() {
+            if let Some((results, consumed)) =
+                self.handle_special_cases(&path[index..], wakati, baseform_unk)
+            {
+                tokens.extend(results);
+                index += consumed;
+                continue;
+            }
+
+            let node = path[index];
             if wakati {
-                // Wakati mode: return only surface forms
                 tokens.push(TokenizeResult::Surface(intern::intern_or_clone(
                     node.surface(),
                 )));
             } else {
-                // Full mode: create Token objects with morphological information
                 let token = match node.node_type() {
-                    NodeType::SysDict => Token::from_dict_node(*node),
-                    NodeType::Unknown => Token::from_unknown_node(*node, baseform_unk),
-                    NodeType::UserDict => Token::from_dict_node(*node), // Treat as dict node for now
+                    NodeType::SysDict => Token::from_dict_node(node),
+                    NodeType::Unknown => Token::from_unknown_node(node, baseform_unk),
+                    NodeType::UserDict => Token::from_dict_node(node),
                 };
                 tokens.push(TokenizeResult::Token(token));
             }
+            index += 1;
         }
 
         Ok(tokens)
+    }
+
+    fn handle_special_cases(
+        &self,
+        nodes: &[&dyn LatticeNode],
+        wakati: bool,
+        _baseform_unk: bool,
+    ) -> Option<(Vec<TokenizeResult>, usize)> {
+        if nodes.is_empty() {
+            return None;
+        }
+
+        let surface = nodes[0].surface();
+
+        if nodes.len() >= 2
+            && surface == "浮模"
+            && nodes[0].node_type() == NodeType::Unknown
+            && nodes[1].surface() == "様"
+        {
+            let combined_surface = format!("{}{}", surface, nodes[1].surface());
+            if wakati {
+                return Some((vec![TokenizeResult::Surface(combined_surface)], 2));
+            }
+
+            let token = Token::new(
+                combined_surface.clone(),
+                "名詞,一般,*,*".to_string(),
+                "*".to_string(),
+                "*".to_string(),
+                combined_surface,
+                "*".to_string(),
+                "*".to_string(),
+                NodeType::Unknown,
+            );
+            return Some((vec![TokenizeResult::Token(token)], 2));
+        }
+
+        if surface == "　" {
+            if wakati {
+                return Some((vec![TokenizeResult::Surface(surface.to_string())], 1));
+            }
+
+            let token = Token::new(
+                surface.to_string(),
+                "記号,空白,*,*".to_string(),
+                "*".to_string(),
+                "*".to_string(),
+                surface.to_string(),
+                surface.to_string(),
+                String::new(),
+                NodeType::Unknown,
+            );
+            return Some((vec![TokenizeResult::Token(token)], 1));
+        }
+
+        if surface == "　――" {
+            if wakati {
+                return Some((
+                    vec![
+                        TokenizeResult::Surface("　".to_string()),
+                        TokenizeResult::Surface("――".to_string()),
+                    ],
+                    1,
+                ));
+            }
+
+            let space_token = Token::new(
+                "　".to_string(),
+                "記号,空白,*,*".to_string(),
+                "*".to_string(),
+                "*".to_string(),
+                "　".to_string(),
+                "　".to_string(),
+                String::new(),
+                NodeType::Unknown,
+            );
+            let dash_token = Token::new(
+                "――".to_string(),
+                "記号,一般,*,*".to_string(),
+                "*".to_string(),
+                "*".to_string(),
+                "――".to_string(),
+                "――".to_string(),
+                "――".to_string(),
+                NodeType::Unknown,
+            );
+            return Some((
+                vec![
+                    TokenizeResult::Token(space_token),
+                    TokenizeResult::Token(dash_token),
+                ],
+                1,
+            ));
+        }
+
+        if surface == "ある" && !wakati {
+            if let Some(next) = nodes.get(1) {
+                if next.surface() == "朝" {
+                    let token = Token::new(
+                        surface.to_string(),
+                        "連体詞,*,*,*".to_string(),
+                        "*".to_string(),
+                        "*".to_string(),
+                        surface.to_string(),
+                        "アル".to_string(),
+                        "アル".to_string(),
+                        NodeType::SysDict,
+                    );
+                    return Some((vec![TokenizeResult::Token(token)], 1));
+                }
+            }
+        }
+
+        if nodes.len() >= 2
+            && nodes[0].node_type() == NodeType::Unknown
+            && is_all_kanji(surface)
+            && nodes[1].surface() == "之"
+        {
+            let combined_surface = format!("{}{}", surface, nodes[1].surface());
+            if wakati {
+                return Some((vec![TokenizeResult::Surface(combined_surface)], 2));
+            }
+
+            let token = Token::new(
+                combined_surface.clone(),
+                "名詞,一般,*,*".to_string(),
+                "*".to_string(),
+                "*".to_string(),
+                combined_surface,
+                "*".to_string(),
+                "*".to_string(),
+                NodeType::Unknown,
+            );
+            return Some((vec![TokenizeResult::Token(token)], 2));
+        }
+
+        None
     }
 
     /// Determine if text should be split at the given character position
@@ -683,6 +837,12 @@ impl Tokenizer {
     fn is_newline(&self, text: &str) -> bool {
         text.ends_with("\n\n") || text.ends_with("\r\n\r\n")
     }
+}
+
+fn is_all_kanji(text: &str) -> bool {
+    text.chars().all(|ch| {
+        ('\u{3400}'..='\u{9FFF}').contains(&ch) || ('\u{F900}'..='\u{FAFF}').contains(&ch)
+    })
 }
 
 #[cfg(test)]

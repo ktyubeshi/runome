@@ -18,8 +18,8 @@ struct GoldenRecord {
     tokens: Vec<String>,
 }
 
-const KNOWN_FULL_DIFFS: &[&str] = &["text_lemon.txt"];
-const KNOWN_WAKATI_DIFFS: &[&str] = &["text_lemon.txt"];
+const KNOWN_FULL_DIFFS: &[&str] = &[];
+const KNOWN_WAKATI_DIFFS: &[&str] = &[];
 
 fn load_goldens<P: AsRef<Path>>(path: P) -> Result<Vec<GoldenRecord>> {
     let file = File::open(path.as_ref())
