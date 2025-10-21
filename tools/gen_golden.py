@@ -177,7 +177,8 @@ def generate_golden(args: argparse.Namespace) -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    return generate_golden(args)
+    generate_golden(args)
+    return 0
 
 
 if __name__ == "__main__":
