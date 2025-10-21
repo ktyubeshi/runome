@@ -1,4 +1,4 @@
-use runome::tokenizer::Tokenizer;
+use runome::tokenizer::{TokenizeResult, Tokenizer};
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -6,6 +6,13 @@ use std::time::Instant;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let bench_mode = args.iter().any(|arg| arg == "--bench");
+    let dump_all = args.iter().any(|arg| arg == "--dump");
+    let input_path = args
+        .iter()
+        .skip(1)
+        .find(|arg| !arg.starts_with("--"))
+        .map(|s| s.as_str())
+        .unwrap_or("fixtures/cases/text_lemon.txt");
 
     // Initialize tokenizer
     let tokenizer = match Tokenizer::new(None, None) {
@@ -17,11 +24,15 @@ fn main() {
     };
 
     // Load test text
-    let text = if let Ok(content) = fs::read_to_string("tests/text_lemon.txt") {
-        content
-    } else {
-        // Fallback text if file not found
-        "これは日本語のテスト文章です。形態素解析を行います。".to_string()
+    let text = match fs::read_to_string(input_path) {
+        Ok(content) => content,
+        Err(_) => {
+            eprintln!(
+                "Warning: could not read {}. Falling back to sample text.",
+                input_path
+            );
+            "これは日本語のテスト文章です。形態素解析を行います。".to_string()
+        }
     };
 
     if bench_mode {
@@ -55,5 +66,17 @@ fn main() {
             println!("{}: {:?}", i, token);
         }
         println!("... ({} total tokens)", tokens.len());
+        if dump_all {
+            for (idx, token) in tokens.iter().enumerate() {
+                match token {
+                    TokenizeResult::Token(tok) => {
+                        println!("#{} len={} {}", idx, tok.surface().chars().count(), tok);
+                    }
+                    TokenizeResult::Surface(surface) => {
+                        println!("#{} len={} {}", idx, surface.chars().count(), surface);
+                    }
+                }
+            }
+        }
     }
 }

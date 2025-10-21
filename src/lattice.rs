@@ -886,7 +886,8 @@ impl<'a> Lattice<'a> {
 
         // Cache for future use (limit cache size to prevent memory bloat)
         if self.surface_len_cache.len() < 5000 {
-            self.surface_len_cache.insert(intern::intern_or_clone(surface), len);
+            self.surface_len_cache
+                .insert(intern::intern_or_clone(surface), len);
         }
 
         len

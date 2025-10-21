@@ -1,5 +1,5 @@
 /// String interning module for common morphological values
-/// 
+///
 /// This module provides static references to frequently used strings to eliminate
 /// repeated allocations during tokenization. Based on analysis of the codebase:
 /// - "*" appears 133 times as placeholder for missing morphological data
@@ -46,7 +46,7 @@ pub fn intern_or_clone(s: &str) -> String {
         "" => EMPTY.to_string(),
         "__BOS__" => BOS_SURFACE.to_string(),
         "__EOS__" => EOS_SURFACE.to_string(),
-        
+
         // Character categories
         "DEFAULT" => CHAR_CATEGORY_DEFAULT.to_string(),
         "KANJI" => CHAR_CATEGORY_KANJI.to_string(),
@@ -56,7 +56,7 @@ pub fn intern_or_clone(s: &str) -> String {
         "KANJINUMERIC" => CHAR_CATEGORY_KANJINUMERIC.to_string(),
         "SYMBOL" => CHAR_CATEGORY_SYMBOL.to_string(),
         "ALPHA" => CHAR_CATEGORY_ALPHA.to_string(),
-        
+
         // Part-of-speech patterns
         "名詞,一般,*,*,*,*" => POS_NOUN_GENERAL.to_string(),
         "名詞,一般" => POS_NOUN_GENERAL_PARTIAL.to_string(),
@@ -64,11 +64,11 @@ pub fn intern_or_clone(s: &str) -> String {
         "名詞,固有名詞" => POS_NOUN_PROPER.to_string(),
         "助詞" => POS_PARTICLE.to_string(),
         "名詞" => POS_NOUN.to_string(),
-        
+
         // Separators
         ", " => COMMA_SPACE.to_string(),
         " | " => PIPE_SPACE.to_string(),
-        
+
         // Not found in intern table, clone as usual
         _ => s.to_string(),
     }
@@ -83,7 +83,7 @@ pub fn intern_ref(s: &str) -> Option<&'static str> {
         "" => Some(EMPTY),
         "__BOS__" => Some(BOS_SURFACE),
         "__EOS__" => Some(EOS_SURFACE),
-        
+
         // Character categories
         "DEFAULT" => Some(CHAR_CATEGORY_DEFAULT),
         "KANJI" => Some(CHAR_CATEGORY_KANJI),
@@ -93,7 +93,7 @@ pub fn intern_ref(s: &str) -> Option<&'static str> {
         "KANJINUMERIC" => Some(CHAR_CATEGORY_KANJINUMERIC),
         "SYMBOL" => Some(CHAR_CATEGORY_SYMBOL),
         "ALPHA" => Some(CHAR_CATEGORY_ALPHA),
-        
+
         // Part-of-speech patterns
         "名詞,一般,*,*,*,*" => Some(POS_NOUN_GENERAL),
         "名詞,一般" => Some(POS_NOUN_GENERAL_PARTIAL),
@@ -101,11 +101,11 @@ pub fn intern_ref(s: &str) -> Option<&'static str> {
         "名詞,固有名詞" => Some(POS_NOUN_PROPER),
         "助詞" => Some(POS_PARTICLE),
         "名詞" => Some(POS_NOUN),
-        
+
         // Separators
         ", " => Some(COMMA_SPACE),
         " | " => Some(PIPE_SPACE),
-        
+
         // Not found in intern table
         _ => None,
     }
@@ -120,7 +120,7 @@ pub fn intern_or_cow(s: &str) -> Cow<'static, str> {
         "" => Cow::Borrowed(EMPTY),
         "__BOS__" => Cow::Borrowed(BOS_SURFACE),
         "__EOS__" => Cow::Borrowed(EOS_SURFACE),
-        
+
         // Character categories - zero-copy static references
         "DEFAULT" => Cow::Borrowed(CHAR_CATEGORY_DEFAULT),
         "KANJI" => Cow::Borrowed(CHAR_CATEGORY_KANJI),
@@ -130,7 +130,7 @@ pub fn intern_or_cow(s: &str) -> Cow<'static, str> {
         "KANJINUMERIC" => Cow::Borrowed(CHAR_CATEGORY_KANJINUMERIC),
         "SYMBOL" => Cow::Borrowed(CHAR_CATEGORY_SYMBOL),
         "ALPHA" => Cow::Borrowed(CHAR_CATEGORY_ALPHA),
-        
+
         // Part-of-speech patterns - zero-copy static references
         "名詞,一般,*,*,*,*" => Cow::Borrowed(POS_NOUN_GENERAL),
         "名詞,一般" => Cow::Borrowed(POS_NOUN_GENERAL_PARTIAL),
@@ -138,11 +138,11 @@ pub fn intern_or_cow(s: &str) -> Cow<'static, str> {
         "名詞,固有名詞" => Cow::Borrowed(POS_NOUN_PROPER),
         "助詞" => Cow::Borrowed(POS_PARTICLE),
         "名詞" => Cow::Borrowed(POS_NOUN),
-        
+
         // Separators - zero-copy static references
         ", " => Cow::Borrowed(COMMA_SPACE),
         " | " => Cow::Borrowed(PIPE_SPACE),
-        
+
         // Not found in intern table - must clone (owned)
         _ => Cow::Owned(s.to_string()),
     }
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(intern_or_clone(""), "");
         assert_eq!(intern_or_clone("DEFAULT"), "DEFAULT");
         assert_eq!(intern_or_clone("名詞,一般,*,*,*,*"), "名詞,一般,*,*,*,*");
-        
+
         // Test non-interned values
         assert_eq!(intern_or_clone("random_string"), "random_string");
     }
@@ -178,7 +178,7 @@ mod tests {
         assert!(intern_ref("*").is_some());
         assert!(intern_ref("").is_some());
         assert!(intern_ref("DEFAULT").is_some());
-        
+
         // Test non-interned values return None
         assert!(intern_ref("random_string").is_none());
     }
@@ -186,42 +186,60 @@ mod tests {
     #[test]
     fn test_character_categories() {
         let categories = [
-            "DEFAULT", "KANJI", "HIRAGANA", "KATAKANA", 
-            "NUMERIC", "KANJINUMERIC", "SYMBOL", "ALPHA"
+            "DEFAULT",
+            "KANJI",
+            "HIRAGANA",
+            "KATAKANA",
+            "NUMERIC",
+            "KANJINUMERIC",
+            "SYMBOL",
+            "ALPHA",
         ];
-        
+
         for category in &categories {
-            assert!(intern_ref(category).is_some(), "Category {} not interned", category);
+            assert!(
+                intern_ref(category).is_some(),
+                "Category {} not interned",
+                category
+            );
         }
     }
 
     #[test]
     fn test_pos_patterns() {
         let patterns = [
-            "名詞,一般,*,*,*,*", "名詞,一般", "名詞,複合,*,*", 
-            "名詞,固有名詞", "助詞", "名詞"
+            "名詞,一般,*,*,*,*",
+            "名詞,一般",
+            "名詞,複合,*,*",
+            "名詞,固有名詞",
+            "助詞",
+            "名詞",
         ];
-        
+
         for pattern in &patterns {
-            assert!(intern_ref(pattern).is_some(), "POS pattern {} not interned", pattern);
+            assert!(
+                intern_ref(pattern).is_some(),
+                "POS pattern {} not interned",
+                pattern
+            );
         }
     }
 
     #[test]
     fn test_intern_or_cow() {
         use std::borrow::Cow;
-        
+
         // Test interned values return Borrowed
         match intern_or_cow("*") {
             Cow::Borrowed(s) => assert_eq!(s, "*"),
             Cow::Owned(_) => panic!("Should be borrowed"),
         }
-        
+
         match intern_or_cow("DEFAULT") {
             Cow::Borrowed(s) => assert_eq!(s, "DEFAULT"),
             Cow::Owned(_) => panic!("Should be borrowed"),
         }
-        
+
         // Test non-interned values return Owned
         match intern_or_cow("random_string") {
             Cow::Owned(s) => assert_eq!(s, "random_string"),
@@ -238,10 +256,10 @@ mod tests {
                 assert_eq!(s, "*");
                 // Verify it's the same as our constant (content equality is sufficient)
                 assert_eq!(s, ASTERISK);
-            },
+            }
             Cow::Owned(_) => panic!("Asterisk should be borrowed"),
         }
-        
+
         // Test that non-interned strings are owned
         let cow_random = intern_or_cow("random_string");
         match cow_random {

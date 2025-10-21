@@ -1003,7 +1003,10 @@ pub mod segmentation_tests {
         let text = match fs::read_to_string("fixtures/cases/text_lemon.txt") {
             Ok(content) => content,
             Err(e) => {
-                eprintln!("Skipping test: Could not read fixtures/cases/text_lemon.txt: {}", e);
+                eprintln!(
+                    "Skipping test: Could not read fixtures/cases/text_lemon.txt: {}",
+                    e
+                );
                 return;
             }
         };

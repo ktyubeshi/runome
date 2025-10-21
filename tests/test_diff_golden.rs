@@ -3,7 +3,7 @@
 //! These integration tests load Janome-generated JSONL files from `golden/`
 //! and assert that Runome emits identical token strings.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use runome::{RunomeError, TokenizeResult, Tokenizer};
 use serde_json::Value;
 use std::fs::File;
@@ -18,8 +18,8 @@ struct GoldenRecord {
     tokens: Vec<String>,
 }
 
-const KNOWN_FULL_DIFFS: &[&str] = &["text_large_nonjp.txt", "text_lemon.txt"];
-const KNOWN_WAKATI_DIFFS: &[&str] = &["text_large_nonjp.txt", "text_lemon.txt"];
+const KNOWN_FULL_DIFFS: &[&str] = &["text_lemon.txt"];
+const KNOWN_WAKATI_DIFFS: &[&str] = &["text_lemon.txt"];
 
 fn load_goldens<P: AsRef<Path>>(path: P) -> Result<Vec<GoldenRecord>> {
     let file = File::open(path.as_ref())
@@ -33,12 +33,8 @@ fn load_goldens<P: AsRef<Path>>(path: P) -> Result<Vec<GoldenRecord>> {
             continue;
         }
 
-        let value: Value = serde_json::from_str(&line).with_context(|| {
-            format!(
-                "failed to decode golden JSONL record at line {}",
-                idx + 1
-            )
-        })?;
+        let value: Value = serde_json::from_str(&line)
+            .with_context(|| format!("failed to decode golden JSONL record at line {}", idx + 1))?;
 
         let mode = value
             .get("mode")
@@ -104,11 +100,7 @@ fn create_tokenizer(wakati: Option<bool>) -> Result<Option<Tokenizer>> {
     }
 }
 
-fn runome_token_strings(
-    tokenizer: &Tokenizer,
-    input: &str,
-    wakati: bool,
-) -> Result<Vec<String>> {
+fn runome_token_strings(tokenizer: &Tokenizer, input: &str, wakati: bool) -> Result<Vec<String>> {
     let tokens = tokenizer
         .tokenize(input, Some(wakati), None)
         .collect::<Result<Vec<_>, _>>()
@@ -171,8 +163,7 @@ fn diff_full_cases_against_janome() -> Result<()> {
             continue;
         }
         assert_eq!(
-            &actual,
-            &record.tokens,
+            &actual, &record.tokens,
             "Runome output deviates from Janome golden for {}",
             record.case
         );
@@ -230,8 +221,7 @@ fn diff_wakati_cases_against_janome() -> Result<()> {
         }
 
         assert_eq!(
-            &actual,
-            &record.tokens,
+            &actual, &record.tokens,
             "Runome wakati output deviates from Janome golden for {}",
             record.case
         );

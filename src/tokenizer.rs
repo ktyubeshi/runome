@@ -322,19 +322,20 @@ impl Tokenizer {
         let mut chunk_end = text.len();
         let mut char_count = 0;
 
-        for (byte_pos, _) in text.char_indices() {
+        for (byte_pos, ch) in text.char_indices() {
             char_count += 1;
-
-            if char_count >= CHUNK_SIZE && char_count < MAX_CHUNK_SIZE {
-                if self.should_split_at_char_pos(text, byte_pos, char_count) {
-                    chunk_end = byte_pos;
-                    break;
-                }
-            }
+            let next_byte_pos = byte_pos + ch.len_utf8();
 
             if char_count >= MAX_CHUNK_SIZE {
-                chunk_end = byte_pos;
+                chunk_end = next_byte_pos.min(text.len());
                 break;
+            }
+
+            if char_count >= CHUNK_SIZE {
+                if self.should_split_at_char_pos(text, next_byte_pos, char_count) {
+                    chunk_end = next_byte_pos.min(text.len());
+                    break;
+                }
             }
         }
 
@@ -406,19 +407,20 @@ impl Tokenizer {
                             matched = true;
                             for entry in entries {
                                 // Create user dictionary node - optimized with string interning
-                                let user_node = Box::new(crate::lattice::UnknownNode::from_dict_entry(
-                                    &entry.surface,
-                                    entry.left_id,
-                                    entry.right_id,
-                                    entry.cost,
-                                    &entry.part_of_speech,
-                                    &entry.inflection_type,
-                                    &entry.inflection_form,
-                                    &entry.base_form,
-                                    &entry.reading,
-                                    &entry.phonetic,
-                                    NodeType::UserDict,
-                                ));
+                                let user_node =
+                                    Box::new(crate::lattice::UnknownNode::from_dict_entry(
+                                        &entry.surface,
+                                        entry.left_id,
+                                        entry.right_id,
+                                        entry.cost,
+                                        &entry.part_of_speech,
+                                        &entry.inflection_type,
+                                        &entry.inflection_form,
+                                        &entry.base_form,
+                                        &entry.reading,
+                                        &entry.phonetic,
+                                        NodeType::UserDict,
+                                    ));
                                 lattice.add(user_node)?;
                             }
                         }
@@ -636,7 +638,9 @@ impl Tokenizer {
         for node in path {
             if wakati {
                 // Wakati mode: return only surface forms
-                tokens.push(TokenizeResult::Surface(intern::intern_or_clone(node.surface())));
+                tokens.push(TokenizeResult::Surface(intern::intern_or_clone(
+                    node.surface(),
+                )));
             } else {
                 // Full mode: create Token objects with morphological information
                 let token = match node.node_type() {
@@ -849,6 +853,44 @@ mod tests {
         assert!(tokenizer.is_splittable("これは文です。"));
         assert!(tokenizer.is_splittable("質問？"));
         assert!(!tokenizer.is_splittable("文の途中"));
+    }
+
+    #[test]
+    fn test_chunk_boundary_preserves_ascii_sequences() {
+        use std::path::Path;
+
+        if !Path::new("sysdic").exists() {
+            eprintln!("Skipping test: sysdic directory not found");
+            return;
+        }
+
+        let tokenizer = Tokenizer::new(None, None).expect("Tokenizer initialization failed");
+        let text = format!("{}text", "long".repeat(256));
+
+        let tokens: Vec<_> = tokenizer
+            .tokenize(&text, None, None)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("Tokenization should succeed");
+
+        assert_eq!(tokens.len(), 2, "Expected two tokens at chunk boundary");
+
+        match &tokens[0] {
+            TokenizeResult::Token(token) => {
+                assert_eq!(token.surface().chars().count(), 1024);
+            }
+            TokenizeResult::Surface(surface) => {
+                assert_eq!(surface.chars().count(), 1024);
+            }
+        }
+
+        match &tokens[1] {
+            TokenizeResult::Token(token) => {
+                assert_eq!(token.surface(), "text");
+            }
+            TokenizeResult::Surface(surface) => {
+                assert_eq!(surface, "text");
+            }
+        }
     }
 
     #[test]
