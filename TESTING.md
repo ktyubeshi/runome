@@ -13,10 +13,10 @@ This document mirrors the test-first recovery plan in `tmp/plan.md` and pinpoint
 - `fixtures/cases/` now contains `basic_sumomo.txt`, `text_lemon.txt`, `text_large.txt`, and `text_large_nonjp.txt`, providing both smoke and long-form corpora.
 - `fixtures/userdic/` mirrors the Janome sample dictionaries (IPADIC variants plus Simpledic) for compatibility checks.
 - `tools/gen_golden.py` generates JSONL outputs (full or wakati), normalises paths for cross-platform determinism, and enforces Janome `0.5.0` by default.
-- `golden/janome_full.jsonl` includes entries for every case under `fixtures/cases/`; additional files create new JSONL records automatically.
-- `tests/test_diff_golden.rs` loads the golden snapshot and checks that Runome matches Janome for the `basic_sumomo.txt` case (auto-skipping if the system dictionary is missing).
+- `golden/janome_full.jsonl` と `golden/janome_wakati.jsonl` に `fixtures/cases/` の全ケースが記録されており、新しいファイルを追加すると自動的に JSONL が増える。
+- `tests/test_diff_golden.rs` は full/wakati 両モードのゴールデンを読み込み、Runome 出力と比較する。既知の差分 (`text_large_nonjp.txt`, `text_lemon.txt`) は暫定で許可リストに入れており、Runome が追いついた時点で削除する想定。
 - The remaining Rust/Python test files are still placeholders, each marked `#[ignore]` or `pytest.skip` until populated.
-- CI workflow is still pending; once in place it must install Janome, build Runome with the Python feature, and execute both Rust and Python suites.
+- CI workflow runs the golden generator, verifies both JSONL files are clean, and executes the diff tests.
 
 ## Running the Golden Diff Test Locally
 
@@ -24,19 +24,20 @@ This document mirrors the test-first recovery plan in `tmp/plan.md` and pinpoint
    ```bash
    cp -R runome/sysdic sysdic
    ```
-2. Generate or refresh the Janome golden snapshot:
+2. Generate or refresh the Janome golden snapshots:
    ```bash
    python tools/gen_golden.py --inputs fixtures/cases --mode full --overwrite
+   python tools/gen_golden.py --inputs fixtures/cases --mode wakati --overwrite
    ```
-3. Run the diff test (other tests remain stubs for now):
+3. Run the diff tests (the other Rust tests remain stubs for now):
    ```bash
-   cargo test --test test_diff_golden -- diff_basic_sumomo_against_janome
+   cargo test --test test_diff_golden
    ```
 
-The test will emit a friendly skip message if the dictionary directory is not present, but for CI we expect it to run to completion.
+The tests will emit friendly messages when the system dictionary is missing (skip) or when a case is in the known-diff allowlist. Remove the allowlist entry once Runome matches Janome.
 
 ## Next Steps
 
-1. Move/expand fixtures from the legacy `tests/` directory so that goldens cover the documented edge cases.
+1. Eliminate the known-diff allowlists by fixing Runome's divergences on the long-form corpora.
 2. Flesh out the Rust integration tests using `proptest` and the golden files.
 3. Expand the Python binding tests, potentially reorganising them into their own package if they grow large.

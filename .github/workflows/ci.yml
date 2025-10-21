@@ -29,10 +29,14 @@ jobs:
           shutil.copytree(pathlib.Path('runome') / 'sysdic', dst)"
       - name: Generate golden snapshot
         run: python tools/gen_golden.py --inputs fixtures/cases --mode full --overwrite
-      - name: Assert golden snapshot is up to date
+      - name: Generate wakati snapshot
+        run: python tools/gen_golden.py --inputs fixtures/cases --mode wakati --overwrite
+      - name: Assert golden snapshots are up to date
         run: git diff --exit-code golden/janome_full.jsonl
-      - name: Run golden diff test
-        run: cargo test --test test_diff_golden -- diff_basic_sumomo_against_janome
+      - name: Assert wakati snapshots are up to date
+        run: git diff --exit-code golden/janome_wakati.jsonl
+      - name: Run golden diff tests
+        run: cargo test --test test_diff_golden
 
   full:
     name: Full matrix (placeholder)
