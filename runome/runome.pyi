@@ -2,7 +2,9 @@
 Type stubs for runome Rust module.
 """
 
-from typing import Optional, Union
+from typing import Iterable, Iterator, Optional, Sequence, Union, Tuple
+
+TokenResult = Union["Token", str, Tuple[str, int]]
 
 class Token:
     """Token with morphological information."""
@@ -64,6 +66,117 @@ class TokenIterator:
 
     def __next__(self) -> Union[Token, str]:
         """Return next token or surface string."""
+        ...
+
+
+class CharFilter:
+    """Base class for character filters."""
+
+    def apply(self, text: str) -> str:
+        """Apply the filter to input text."""
+        ...
+
+    def __call__(self, text: str) -> str:
+        """Allow the filter to be called directly."""
+        ...
+
+
+class RegexReplaceCharFilter(CharFilter):
+    """Character filter performing regex-based replacements."""
+
+    def __init__(self, pattern: str, replacement: str) -> None:
+        ...
+
+
+class UnicodeNormalizeCharFilter(CharFilter):
+    """Character filter applying Unicode normalization."""
+
+    def __init__(self, form: str = "NFKC") -> None:
+        ...
+
+
+class TokenFilterIterator:
+    """Iterator for token filter results."""
+
+    def __iter__(self) -> "TokenFilterIterator":
+        ...
+
+    def __next__(self) -> TokenResult:
+        ...
+
+
+class TokenFilter:
+    """Base class for token filters."""
+
+    def apply(self, tokens: Iterable[Token]) -> TokenFilterIterator:
+        ...
+
+    def __call__(self, tokens: Iterable[Token]) -> TokenFilterIterator:
+        ...
+
+
+class LowerCaseFilter(TokenFilter):
+    """Filter converting token surfaces to lowercase."""
+
+    def __init__(self) -> None:
+        ...
+
+
+class UpperCaseFilter(TokenFilter):
+    """Filter converting token surfaces to uppercase."""
+
+    def __init__(self) -> None:
+        ...
+
+
+class POSStopFilter(TokenFilter):
+    """Filter removing tokens with specified POS tags."""
+
+    def __init__(self, pos_list: Sequence[str]) -> None:
+        ...
+
+
+class POSKeepFilter(TokenFilter):
+    """Filter keeping only tokens with specified POS tags."""
+
+    def __init__(self, pos_list: Sequence[str]) -> None:
+        ...
+
+
+class CompoundNounFilter(TokenFilter):
+    """Filter combining consecutive nouns."""
+
+    def __init__(self) -> None:
+        ...
+
+
+class ExtractAttributeFilter(TokenFilter):
+    """Filter extracting a single attribute from each token."""
+
+    def __init__(self, attr: str = "surface") -> None:
+        ...
+
+
+class TokenCountFilter(TokenFilter):
+    """Terminal filter counting token occurrences."""
+
+    def __init__(self, attr: str = "surface", sorted: bool = False) -> None:
+        ...
+
+
+class Analyzer:
+    """Analyzer orchestrating char filters, tokenizer, and token filters."""
+
+    def __init__(
+        self,
+        *,
+        char_filters: Optional[Sequence[CharFilter]] = None,
+        tokenizer: Optional[Tokenizer] = None,
+        token_filters: Optional[Sequence[TokenFilter]] = None,
+    ) -> None:
+        ...
+
+    def analyze(self, text: str) -> TokenFilterIterator:
         ...
 
 class Tokenizer:
