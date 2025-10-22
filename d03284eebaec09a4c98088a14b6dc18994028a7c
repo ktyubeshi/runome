@@ -1,0 +1,308 @@
+共有いただいた計測結果（特に `dictionary_load/SystemDictionary::new` が ≈225 ms、`text_large` 系が ≈30 KiB/s 前後）を見る限り、ボトルネックは **(1) 辞書のロードと表層→候補列挙、(2) ラティス構築（Viterbi の辺追加）** に集中しています。添付コードを読むと、現状の実装にはアルゴリズム・データ構造の観点で大きく伸ばせる余地があります。以下、**純 Rust だけでの“飛躍的”高速化**に絞って、優先度順に具体策と改修ポイントを示します（該当コードへの引用付き）。
+
+---
+
+## まず押さえるべき全体方針（10× を狙える領域）
+
+1. **辞書の完全ゼロコピー化（ロードを I/O 待ちレベルへ）**
+
+   * 目的: `SystemDictionary::new` を 200 ms→数十 ms（理想は <20 ms）へ。
+   * 施策:
+
+     * FST はすでに mmap に対応していますが（`Matcher::from_path` で `memmap2` を使用）、
+       残りの `entries.bin` / `connections.bin` / `char_defs.bin` / `unknowns.bin` は **bincode を Vec にデシリアライズ**しており、起動時コピーが発生しています。
+     * これらを **rkyv（アーカイブ形式）＋ memmap** に置き換え、**ゼロコピー参照**にします（`Box<[T]>` / `&[T]` を直接参照）。
+
+       * 併せて `DictionaryResource` の `connections: Vec<Vec<i16>>` を **行列一次元化**（後述）し、**mmap した `Box<[i16]>` を直接参照**。
+     * `SystemDictionary` のシングルトン実装も `Arc<OnceLock<Arc<SystemDictionary>>>`（または `OnceCell`）に変更し、**初回以外のロックを除去**（今は `Arc<Mutex<Option<...>>>` で都度ロック）。
+
+2. **表層→辞書候補の列挙を O(候補数) 化（1文字位置あたり1回の走査）**
+
+   * 目的: `text_large` の 30 KiB/s 級を **2–5×** 以上に押し上げ。
+   * 現状: 各位置で **1..=15 文字**の全ての長さで `lookup(substring)` を呼んでいます（= 余計な substring 作成と FST 照会の重複）。
+   * 施策: **FST の “prefix 走査”**で、**その位置から伸びる全一致候補を一括列挙**します（Lucene/KUROMOJI と同様の手法）。
+
+     * `fst::Map` に対し `automaton::StartsWith`（または内部遷移 API）で `text[byte_pos..]` を1回走査 → **候補の key 範囲をストリームで取得**。
+     * これにより substring の生成（`ChunkCharView::slice`）と `lookup` の N 回呼び出しを**1 回の FST 走査**に圧縮できます。
+     * すでに `Matcher` に「バイト境界での段階列挙」を入れかけています（index id 収集・重複除去の実装片）ので、これを **Tokenizer の内側ループへ統合**し、`for char_len in 1..=max` を廃止します。
+
+3. **ラティス格納の “ポインタ＆trait object” をやめて、**
+   **“インデックス参照＋[構造体の配列]（必要なら SoA）” に全面切替**
+
+   * 目的: **大量の `Box<dyn LatticeNode>` アロケーションと仮想呼び出しを消滅** → Viterbi の辺追加コストを 2–4× 短縮。
+   * 現状: `Lattice` は `Vec<Vec<Box<dyn LatticeNode>>>` を2つ持ち、各ノードがヒープ確保＋動的ディスパッチです。
+   * 施策:
+
+     * `enum Node { Dict(NodeDict), Unk(NodeUnk), Bos, Eos }` などの **具象 enum** に変更し、**単一の `Vec<Node>`（arena）** に格納。
+     * `snodes/enodes` は **`SmallVec<[u32; 8]>` などの “ノードID配列”** にし、**インデックスで参照**。
+     * `get_trans_cost`・`min_cost` など頻出メソッドは **関数/インライン関数**に（`#[inline]`）。
+     * すでに `CompactEndNode` を導入済み（終端側の極小構造体）なので、**始端側も同様に軽量化**します。
+
+---
+
+## 具体的な改修ポイント（コード位置つき）
+
+### A. 辞書ロード／保持（ゼロコピー & 余計なロック排除）
+
+* `DictionaryResource`
+
+  * **connections の一次元化**：
+    今は `Vec<Vec<i16>>` で二重 `get()`（境界チェック2回）。
+    → `struct ConnectionMatrix { rows: u16, cols: u16, data: Box<[i16]> }` に変更し、
+
+    ```rust
+    #[inline] fn get(&self, l: u16, r: u16) -> i16 {
+        // 安全のため debug_assert。release は境界チェックなし
+        debug_assert!((l as usize) < self.rows as usize && (r as usize) < self.cols as usize);
+        unsafe { *self.data.get_unchecked(l as usize * self.cols as usize + r as usize) }
+    }
+    ```
+
+    とするだけで **Viterbi の遷移コスト参照が高速化**します。
+    `get_trans_cost` 呼び出し頻度は非常に多いので効果が大きい。
+
+  * **rkyv + memmap**：
+    `entries`/`char_defs`/`unknowns` も rkyv 化し `&[T]` で直接参照（bincode → rkyv）。
+    これで `SystemDictionary::new` 中の読み込み（デシリアライズ）時間を **I/O の mmap 初期化程度**に縮められます。
+
+* `SystemDictionary::instance`
+
+  * `Arc<Mutex<Option<...>>>` を `OnceLock<Arc<SystemDictionary>>` に換装し、**参照取得時のロックを撤去**。
+
+* `Matcher`
+
+  * すでに **mmap バックエンド**を持っています（`FstBacking::Mapped`）ので、FST は現状で OK。
+
+### B. 表層→候補列挙（FST の prefix 走査を中心に）
+
+* `tokenizer::add_dictionary_entries` の内側ループ
+
+  * いまは **1..=15 文字**で `lookup(substring)` を試行しています。
+  * ここを **`Matcher::prefix_iter(text, byte_pos)`（新規 API）**に置換：
+
+    * `ChunkCharView` は **char→byte の対応**を持っているので、`byte_pos = offsets[char_pos]` から `fst::Map` を **“その位置から一回だけ”走査**。
+    * 返ってきた（複数の）キーを `morpheme_index` で ID 群へ解決（`Matcher::lookup_morpheme_ids` の既存実装を活用）。
+    * これで **substring の生成と `lookup` 多重実行が不要**になります。
+
+* `Dictionary::lookup` の戻り値
+
+  * `Vec<&DictEntry>` は毎回ヒープ確保が走ります。
+  * 内部では `entries` 参照のインデックスが分かっているので、**`impl Iterator<Item=&DictEntry>` を返す形**（または `SmallVec`）にすると**アロケーションを削減**できます。
+  * 互換性の都合で API を変えにくければ、**呼ぶ側で `SmallVec<[&DictEntry; 4]>` を使う**。
+
+### C. ラティス（Viterbi）実装の動的ディスパッチ排除
+
+* `Lattice` の定義を
+  `Vec<Vec<Box<dyn LatticeNode>>>` → **`nodes: Vec<Node>` + `snodes: Vec<SmallVec<[u32;N]>>` / `enodes: Vec<SmallVec<[u32;N]>>`** に変更。
+
+  * `Node` は enum（`Dict`/`Unk`/`Bos`/`Eos`）。頻用フィールド（`min_cost, back_pos, back_index, left_id, right_id, cost, len`）を **コンパクトに連続配置**。
+  * すでに `CompactEndNode` で終端側の軽量化を入れているので、この方針を**始端側にも全面適用**。
+  * これで **ヒープ確保＆仮想呼び出し＆キャッシュミス**が大幅減。Viterbi の内側ループ（`add`）で効きます。
+
+* コスト計算内での遷移コスト参照
+
+  * 一次元化した `ConnectionMatrix` の `get()` を **`#[inline(always)]`**。
+  * `min_cost` の更新分岐は **if 文最小化**（見つけた最小経路の index を保持する純粋な線形探索）。
+
+### D. 文字種判定（Unknown 処理の前段）を O(1) に
+
+* 現状 `SystemDictionary::get_char_categories` は
+  **range 線形走査 + `HashMap<String, Vec<String>>` を返却**しており、**都度 `String` の clone**が発生します。
+* 対策:
+
+  * `CategoryId(u8)` を導入し、**互換カテゴリは `u64` ビットフラグ**などで保持。
+  * `code_ranges` は **開始コードポイントでソート + 二分探索**にし、結果は **`CategoryId` の配列**で返す（`Vec<String>` や `HashMap` を排除）。
+  * `precompute_char_categories()` も `Vec<Vec<String>>` から **`Vec<CategoryMask>`** に変更。
+  * 互換判定 `is_compatible_category_python_style` は `match` で `&str` 比較していますが、**整数マスク演算**に置換すると**分岐と文字列比較を排除**できます。
+
+### E. Token 出力の分岐削減（特に `wakati`）
+
+* `wakati` のときは **表層だけ**必要。`Token` 構築や文字列正規化を避ける（`TokenizeResult::Surface` だけ）。
+* 既に分岐していますが、**Node 構造体に “必要最低限の &str だけ保持”**させ、`wakati` では**表層だけ取り出す**パスをさらに最短化する。
+
+---
+
+## 期待される効果の目安
+
+* **辞書ロード**：bincode→rkyv＋mmap、OnceLock 化で **200 ms → 10–30 ms** 程度（マシン依存）。
+* **候補列挙の prefix 走査**：`text_large` 系で **2–5×**（substring 生成と重複 lookup を排除）。
+* **ラティスの動的ディスパッチ除去**：**2–4×**（ヒープ確保削減＋キャッシュ局所性）。
+* **文字種判定の整数化**：Unknown 多発テキストで **1.5–3×**（ケース依存）。
+* **合算の体感**：ケースにもよりますが、`text_large` の 30 KiB/s は **>100 KiB/s 〜 数百 KiB/s** まで現実的に見込めます（non-JP の 4.5 MiB/s には届かないが、桁が1つ動く可能性は高い）。
+
+---
+
+## 最小変更で着手しやすい順序（安全マージ単位）
+
+1. **ConnectionMatrix の一次元化**（API 影響小、効果大）
+
+   * 変更点：`dictionary::types` / `DictionaryResource::get_connection_cost()`。
+2. **`SystemDictionary::instance` のロック撤去（OnceLock）**。
+3. **FST prefix 走査を導入して `for char_len` ループ削除**。
+4. **ラティスを enum＋arena 化（Box<dyn> 全廃）**。
+5. **文字種判定の整数・ビットマスク化**（`precompute_char_categories()` の戻り値変更）。
+6. **rkyv＋mmap で `entries`/`unknowns`/`char_defs` をゼロコピー化**。
+
+---
+
+## 変更例（抜粋）
+
+### 1) ConnectionMatrix の一次元化
+
+```rust
+// dictionary/types.rs
+pub struct ConnectionMatrix {
+    rows: u16,
+    cols: u16,
+    data: Box<[i16]>,
+}
+
+impl ConnectionMatrix {
+    #[inline]
+    pub fn get(&self, left_id: u16, right_id: u16) -> Option<i16> {
+        let l = left_id as usize;
+        let r = right_id as usize;
+        if l < self.rows as usize && r < self.cols as usize {
+            // SAFETY: 上の境界チェック済み
+            let idx = l * self.cols as usize + r;
+            Some(unsafe { *self.data.get_unchecked(idx) })
+        } else {
+            None
+        }
+    }
+}
+```
+
+```rust
+// dictionary/dict_resource.rs
+impl DictionaryResource {
+    #[inline]
+    pub fn get_connection_cost(&self, l: u16, r: u16) -> Result<i16, RunomeError> {
+        self.connections
+            .get(l, r)
+            .ok_or(RunomeError::InvalidConnectionId { left_id: l, right_id: r })
+    }
+}
+```
+
+（現状は `Vec<Vec<i16>>` で二重 `get()`）
+
+### 2) `SystemDictionary::instance` のロック撤去
+
+```rust
+// dictionary/system_dict.rs
+static INSTANCE: OnceLock<Arc<SystemDictionary>> = OnceLock::new();
+
+impl SystemDictionary {
+    pub fn instance() -> Result<Arc<SystemDictionary>, RunomeError> {
+        Ok(INSTANCE.get_or_try_init(|| {
+            let sysdic_path = Path::new("sysdic");
+            Ok(Arc::new(Self::new(sysdic_path)?))
+        })?.clone())
+    }
+}
+```
+
+（現状は `Arc<Mutex<Option<SystemDictionary>>>`）
+
+### 3) FST prefix 走査（概略）
+
+```rust
+impl Matcher {
+    // text[byte_pos..] を 1 回走査して “そこから始まる全キー” を列挙
+    pub fn starts_with<'a>(&'a self, bytes: &'a [u8]) -> impl Iterator<Item = u64> + 'a {
+        // fst::Map::search(automaton::StartsWith(bytes)) などで Stream を作り、
+        // into_stream().for_each(|(key, idx_id)| ...) の idx_id を yield
+    }
+}
+
+// tokenizer.rs (疑似コード)
+let start = chunk.byte_offset(char_pos);
+for index_id in matcher.starts_with(&text.as_bytes()[start..]) {
+    for mid in matcher.lookup_morpheme_ids(index_id, resource.morpheme_index()) {
+        // Node を追加
+    }
+}
+```
+
+これで `for char_len in 1..=max` と `lookup(substring)` の多重呼び出しを **1 回の FST ストリーム**に置換できます。
+
+### 4) Lattice の arena 化（概略）
+
+```rust
+pub struct Lattice {
+    nodes: Vec<Node>,                 // arena
+    snodes: Vec<SmallVec<[u32; 8]>>,  // start indices
+    enodes: Vec<SmallVec<[u32; 8]>>,  // end indices
+    p: usize,
+    dic: Arc<dyn Dictionary>,         // ここは後で Monomorphize 検討
+}
+
+pub enum Node {
+    Dict(NodeDict),
+    Unk(NodeUnk),
+    Bos,
+    Eos,
+}
+
+#[repr(C)] // 連続配置を明示（必要に応じ）
+pub struct NodeCore {
+    pub left_id: u16,
+    pub right_id: u16,
+    pub word_cost: i16,
+    pub min_cost: i32,
+    pub back_pos: i32,
+    pub back_idx: u32,
+    pub len_chars: u16,
+}
+```
+
+現状の `Box<dyn LatticeNode>` と trait 呼び出しを排除し、**連続領域へのインデックス参照**にします。既存の `CompactEndNode`（終端の軽量構造体）と整合します。
+
+### 5) 文字種の整数化
+
+* `SystemDictionary::get_char_categories(&self, ch: char)` は `HashMap<String, Vec<String>>` を返しており高コスト。
+  → `CategoryId(u8)` と `CategoryMask(u64)` を導入し、**`Vec<CategoryMask>`** を返すように変更。
+* `precompute_char_categories()` の戻り値も `Vec<Vec<String>>` → **`Vec<CategoryMask>`** に変更。
+* `is_compatible_category_python_style()` は `&str` 比較の `match` を **ビット演算**に置換。
+
+---
+
+## なぜこの順番か（効果 × 実装コストのバランス）
+
+* **①行列一次元化**と**②ロック撤去**は影響範囲が狭く、**即効性が高い**。
+* **③prefix 走査**は Tokenizer の内側ホットループを直接短縮。**大幅に効く**。
+* **④arena 化**は差分が大きいが、**Viterbi のコアを抜本的に軽く**する。
+* **⑤整数化**は Unknown 多発時に効くうえに、**String/HashMap の GC 圧を抑制**。
+* **⑥rkyv＋mmap**はロード激速化・常時ゼロコピーを実現。**トータルで最速化の最後の一押し**。
+
+---
+
+## 参考: 現状コードで確認できる該当箇所
+
+* `SystemDictionary` のロック＆カテゴリ取得
+* `Lattice` が `Box<dyn LatticeNode>` を多用
+* `CompactEndNode` 最適化の片鱗
+* Tokenizer の内側ループで substring を都度生成＆ lookup
+* `ChunkCharView` による char ↔ byte 対応（prefix 走査に使える）
+* `DictionaryResource::get_connection_cost` が二重 `get()`
+* FST の mmap バックエンド実装済み
+* bincode ロード前提の設計記述
+
+---
+
+## ベンチでの確認観点
+
+1. `dictionary_load/SystemDictionary::new`
+
+   * rkyv＋mmap 化前後の差分（期待: 200 ms → <30 ms）。
+2. `tokenize/*/wakati_bytes` と `*_tokens`
+
+   * **prefix 走査導入**・**arena 化**・**整数化**の各段階で測定。
+3. `text_large_nonjp`
+
+   * ここは現状も速い（≈4.5 MiB/s）。**退行がない**ことを確認。
+
+---
+
+必要であれば、上記のどれか一つをこちらでパッチ化した「最小差分 PR 風の差分案（関数/構造体の具体名つき）」に落とし込みます。まずは **ConnectionMatrix の一次元化 → Tokenizer の prefix 走査**の2本から着手すると、もっとも早く体感改善が得られるはずです。
