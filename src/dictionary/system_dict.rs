@@ -312,13 +312,11 @@ impl SystemDictionary {
     pub fn get_unknown_entries_result(
         &self,
         category: &str,
-    ) -> Result<Vec<&UnknownEntry>, RunomeError> {
-        match self.get_unknown_entries(category) {
-            Some(entries) => Ok(entries.iter().collect()),
-            None => Err(RunomeError::DictValidationError {
+    ) -> Result<&[UnknownEntry], RunomeError> {
+        self.get_unknown_entries(category)
+            .ok_or_else(|| RunomeError::DictValidationError {
                 reason: format!("Unknown category: {}", category),
-            }),
-        }
+            })
     }
 
     /// Check if unknown word processing should always be invoked for this category (Result version)
