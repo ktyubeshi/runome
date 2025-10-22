@@ -1,0 +1,6 @@
+Benchmarks (cargo bench --profile release --bench tokenize -- --measurement-time 0.5 --warm-up-time 0.2 --sample-size 10)
+
+- tokenize/text_large/morpheme_bytes: 2.74 ms median (~28× faster)
+- tokenize/text_large/morpheme_tokens: 2.91 ms median (~30× faster)
+- tokenize/basic_sumomo/morpheme_bytes: 50 µs median (~7.5× faster)
+- tokenize/text_large_nonjp/morpheme_tokens: 179 µs median (~25% faster)
