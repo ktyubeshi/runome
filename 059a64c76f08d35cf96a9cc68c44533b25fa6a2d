@@ -1,0 +1,3 @@
+Benchmarks (cargo run --release --example tokenizer_bench -- --bench --file fixtures/cases/text_large.txt)
+
+- text_large example: 3.05 ms / 5010 tokens ≈ 164k tokens/s (10 iterations)
