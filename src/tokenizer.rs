@@ -531,27 +531,22 @@ impl Tokenizer {
             }
 
             // 2. Unknown word processing follows Python Janome logic
-            for category in char_categories {
-                let category_str = category.as_str();
-                let should_invoke = !matched
-                    || self
-                        .sys_dic
-                        .unknown_invoked_always_result(category_str)
-                        .unwrap_or(false);
+            for &category_id in char_categories {
+                let should_invoke = !matched || self.sys_dic.unknown_invoked_always_id(category_id);
 
                 if !should_invoke {
                     continue;
                 }
 
-                let unknown_entries = match self.sys_dic.get_unknown_entries_result(category_str) {
-                    Ok(entries) => entries,
-                    Err(_) => continue,
+                let unknown_entries = match self.sys_dic.get_unknown_entries_by_id(category_id) {
+                    Some(entries) => entries,
+                    None => continue,
                 };
 
                 let grouped_surface = self.build_grouped_surface_python_style(
                     chunk,
                     char_pos,
-                    category_str,
+                    category_id,
                     &char_categories_cache,
                 )?;
 
@@ -595,18 +590,18 @@ impl Tokenizer {
         &self,
         chunk: &ChunkCharView<'_>,
         start_char_index: usize,
-        category: &str,
-        char_categories_cache: &[Vec<String>],
+        category_id: u16,
+        char_categories_cache: &[Vec<u16>],
     ) -> Result<String, RunomeError> {
         if start_char_index >= chunk.len_chars() {
             return Ok(String::new());
         }
 
-        let category_max_length = self.sys_dic.unknown_length_result(category)?;
-        let max_length = if self.sys_dic.unknown_grouping_result(category)? {
+        let category_max_length = self.sys_dic.unknown_length_id(category_id);
+        let max_length = if self.sys_dic.unknown_grouping_id(category_id) {
             self.max_unknown_length
         } else {
-            category_max_length
+            std::cmp::min(category_max_length, self.max_unknown_length)
         };
 
         let remaining = chunk.len_chars() - start_char_index;
@@ -614,6 +609,7 @@ impl Tokenizer {
         let mut buf = String::with_capacity(target_capacity);
         buf.push(chunk.char_at(start_char_index));
         let mut current_len = 1;
+        let base_categories = &char_categories_cache[start_char_index];
 
         for idx in (start_char_index + 1)..chunk.len_chars() {
             if current_len >= max_length {
@@ -625,9 +621,10 @@ impl Tokenizer {
                 None => break,
             };
 
-            let same_category = c_categories.iter().any(|cat| cat == category);
-            let compatible =
-                self.is_compatible_category_python_style(category, c_categories.as_slice());
+            let same_category = c_categories.iter().any(|&cat| cat == category_id);
+            let compatible = base_categories
+                .iter()
+                .any(|base_id| c_categories.iter().any(|candidate| candidate == base_id));
 
             if same_category || compatible {
                 buf.push(chunk.char_at(idx));
@@ -640,49 +637,17 @@ impl Tokenizer {
         Ok(buf)
     }
 
-    /// Python-style category compatibility checking
-    /// Implements: any(cate in _compat_cates for _compat_cates in _cates.values())
-    fn is_compatible_category_python_style(
-        &self,
-        base_category: &str,
-        char_categories: &[String],
-    ) -> bool {
-        // For now, use simplified compatibility rules
-        // TODO: Implement full compatible categories lookup from char definitions
-        match base_category {
-            "NUMERIC" => char_categories
-                .iter()
-                .any(|cat| cat == "NUMERIC" || cat == "DEFAULT"),
-            "ALPHA" => char_categories
-                .iter()
-                .any(|cat| cat == "ALPHA" || cat == "DEFAULT"),
-            "KATAKANA" => char_categories
-                .iter()
-                .any(|cat| cat == "KATAKANA" || cat == "DEFAULT"),
-            "HIRAGANA" => char_categories
-                .iter()
-                .any(|cat| cat == "HIRAGANA" || cat == "DEFAULT"),
-            "KANJI" => char_categories
-                .iter()
-                .any(|cat| cat == "KANJI" || cat == "DEFAULT"),
-            "SYMBOL" => char_categories
-                .iter()
-                .any(|cat| cat == "SYMBOL" || cat == "DEFAULT"),
-            _ => false,
-        }
-    }
-
     /// Pre-compute character categories for each character in the chunk.
     fn precompute_char_categories(
         &self,
         chunk: &ChunkCharView<'_>,
-    ) -> Result<Vec<Vec<String>>, RunomeError> {
+    ) -> Result<Vec<Vec<u16>>, RunomeError> {
         let total_chars = chunk.len_chars();
         let mut cache = Vec::with_capacity(total_chars);
 
         for idx in 0..total_chars {
             let ch = chunk.char_at(idx);
-            cache.push(self.sys_dic.get_char_categories_result(ch)?);
+            cache.push(self.sys_dic.get_char_category_ids(ch));
         }
 
         Ok(cache)

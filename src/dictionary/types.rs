@@ -36,7 +36,7 @@ pub struct CharDefinitions {
     pub code_ranges: Vec<CodePointRange>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnknownEntry {
     pub left_id: u16,
     pub right_id: u16,

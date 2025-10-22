@@ -1,8 +1,11 @@
 use crate::error::RunomeError;
+use smallvec::SmallVec;
 use std::path::Path;
 use std::sync::Arc;
 
 use super::{loader, types::*};
+
+type CategoryId = u16;
 
 #[derive(Debug, Clone)]
 struct PackedConnectionMatrix {
@@ -11,23 +14,171 @@ struct PackedConnectionMatrix {
     data: Box<[i16]>,
 }
 
-pub(crate) struct CharCategoryIter<'a> {
-    ranges: &'a [CodePointRange],
-    index: usize,
-    ch: char,
+#[derive(Debug, Clone, Copy)]
+struct CategoryFlags {
+    invoke: bool,
+    group: bool,
+    length: u8,
 }
 
-impl<'a> Iterator for CharCategoryIter<'a> {
-    type Item = (&'a str, &'a [String]);
+#[derive(Debug)]
+struct CodePointCategory {
+    start: u32,
+    end: u32,
+    primary_id: CategoryId,
+    compat_ids: SmallVec<[CategoryId; 4]>,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some(range) = self.ranges.get(self.index) {
-            self.index += 1;
-            if self.ch >= range.from && self.ch <= range.to {
-                return Some((range.category.as_str(), range.compat_categories.as_slice()));
+#[derive(Debug)]
+struct CategoryIndex {
+    name_to_id: std::collections::HashMap<String, CategoryId>,
+    names: Vec<String>,
+    flags: Vec<CategoryFlags>,
+    code_ranges: Vec<CodePointCategory>,
+    default_id: Option<CategoryId>,
+}
+
+impl CategoryIndex {
+    fn new(defs: &CharDefinitions) -> Result<Self, RunomeError> {
+        let mut names: Vec<String> = defs.categories.keys().cloned().collect();
+        names.sort();
+
+        let mut name_to_id = std::collections::HashMap::with_capacity(names.len());
+        let mut flags = Vec::with_capacity(names.len());
+        let mut default_id = None;
+
+        for (idx, name) in names.iter().enumerate() {
+            let Some(cat) = defs.categories.get(name) else {
+                return Err(RunomeError::DictValidationError {
+                    reason: format!("Missing category metadata for '{}'", name),
+                });
+            };
+            if name == "DEFAULT" {
+                default_id = Some(idx as CategoryId);
+            }
+            name_to_id.insert(name.clone(), idx as CategoryId);
+            flags.push(CategoryFlags {
+                invoke: cat.invoke,
+                group: cat.group,
+                length: cat.length,
+            });
+        }
+
+        let mut code_ranges = Vec::with_capacity(defs.code_ranges.len());
+        for range in &defs.code_ranges {
+            let Some(&primary_id) = name_to_id.get(&range.category) else {
+                return Err(RunomeError::DictValidationError {
+                    reason: format!(
+                        "Code range references non-existent category: {}",
+                        range.category
+                    ),
+                });
+            };
+            let mut compat_ids: SmallVec<[CategoryId; 4]> =
+                SmallVec::with_capacity(range.compat_categories.len());
+            for compat in &range.compat_categories {
+                if let Some(&id) = name_to_id.get(compat) {
+                    compat_ids.push(id);
+                }
+            }
+            compat_ids.sort_unstable();
+            compat_ids.dedup();
+            code_ranges.push(CodePointCategory {
+                start: range.from as u32,
+                end: range.to as u32,
+                primary_id,
+                compat_ids,
+            });
+        }
+
+        code_ranges.sort_by_key(|entry| entry.start);
+
+        Ok(Self {
+            name_to_id,
+            names,
+            flags,
+            code_ranges,
+            default_id,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    fn category_id(&self, name: &str) -> Option<CategoryId> {
+        self.name_to_id.get(name).copied()
+    }
+
+    fn category_name(&self, id: CategoryId) -> &str {
+        &self.names[id as usize]
+    }
+
+    fn flags(&self, id: CategoryId) -> CategoryFlags {
+        self.flags[id as usize]
+    }
+
+    fn category_ids_for_char(&self, ch: char) -> SmallVec<[CategoryId; 8]> {
+        let cp = ch as u32;
+        let mut ids: SmallVec<[CategoryId; 8]> = SmallVec::new();
+        for entry in &self.code_ranges {
+            if cp < entry.start {
+                break;
+            }
+            if cp > entry.end {
+                continue;
+            }
+            ids.push(entry.primary_id);
+            ids.extend_from_slice(&entry.compat_ids);
+        }
+        if ids.is_empty() {
+            if let Some(default_id) = self.default_id {
+                ids.push(default_id);
+            }
+        } else {
+            ids.sort_unstable();
+            ids.dedup();
+        }
+        ids
+    }
+
+    fn matches(&self, ch: char) -> Vec<(CategoryId, SmallVec<[CategoryId; 4]>)> {
+        let cp = ch as u32;
+        let mut matches = Vec::new();
+        for entry in &self.code_ranges {
+            if cp < entry.start {
+                break;
+            }
+            if cp > entry.end {
+                continue;
+            }
+            matches.push((entry.primary_id, entry.compat_ids.clone()));
+        }
+        if matches.is_empty() {
+            if let Some(default_id) = self.default_id {
+                matches.push((default_id, SmallVec::new()));
             }
         }
-        None
+        matches
+    }
+}
+
+struct CategoryIterEntry {
+    primary: String,
+    compat: Vec<String>,
+}
+
+pub(crate) struct CharCategoryIter {
+    entries: std::vec::IntoIter<CategoryIterEntry>,
+}
+
+impl Iterator for CharCategoryIter {
+    type Item = (String, Vec<String>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.entries
+            .next()
+            .map(|entry| (entry.primary, entry.compat))
     }
 }
 
@@ -119,6 +270,8 @@ pub struct DictionaryResource {
     char_defs: CharDefinitions,
     unknowns: UnknownEntries,
     morpheme_index: Vec<Vec<u32>>,
+    category_index: CategoryIndex,
+    unknown_entries_by_id: Vec<Vec<UnknownEntry>>,
 }
 
 impl DictionaryResource {
@@ -133,6 +286,15 @@ impl DictionaryResource {
         let char_defs = loader::load_char_definitions(sysdic_dir)?;
         let unknowns = loader::load_unknown_entries(sysdic_dir)?;
         let morpheme_index = loader::load_morpheme_index(sysdic_dir)?;
+        let category_index = CategoryIndex::new(&char_defs)?;
+
+        let mut unknown_entries_by_id = Vec::with_capacity(category_index.len());
+        unknown_entries_by_id.resize_with(category_index.len(), Vec::new);
+        for (name, entries_vec) in unknowns.iter() {
+            if let Some(id) = category_index.category_id(name) {
+                unknown_entries_by_id[id as usize] = entries_vec.clone();
+            }
+        }
 
         Ok(Self {
             entries,
@@ -141,6 +303,8 @@ impl DictionaryResource {
             char_defs,
             unknowns,
             morpheme_index,
+            category_index,
+            unknown_entries_by_id,
         })
     }
 
@@ -245,17 +409,34 @@ impl DictionaryResource {
 
     /// Get character category for a given character (returns first match)
     pub fn get_char_category(&self, ch: char) -> Option<&CharCategory> {
-        self.iter_char_categories(ch)
-            .next()
-            .and_then(|(category, _)| self.char_defs.categories.get(category))
+        let ids = self.category_index.category_ids_for_char(ch);
+        ids.into_iter().find_map(|id| {
+            let name = self.category_index.category_name(id);
+            self.char_defs.categories.get(name)
+        })
     }
 
     #[inline]
-    pub(crate) fn iter_char_categories(&self, ch: char) -> CharCategoryIter<'_> {
+    pub(crate) fn iter_char_categories(&self, ch: char) -> CharCategoryIter {
+        let matches = self
+            .category_index
+            .matches(ch)
+            .into_iter()
+            .map(|(primary, compat)| {
+                let primary_name = self.category_index.category_name(primary).to_string();
+                let compat_names = compat
+                    .into_iter()
+                    .map(|id| self.category_index.category_name(id).to_string())
+                    .collect();
+                CategoryIterEntry {
+                    primary: primary_name,
+                    compat: compat_names,
+                }
+            })
+            .collect::<Vec<_>>();
+
         CharCategoryIter {
-            ranges: &self.char_defs.code_ranges,
-            index: 0,
-            ch,
+            entries: matches.into_iter(),
         }
     }
 
@@ -266,7 +447,7 @@ impl DictionaryResource {
         let mut result = std::collections::HashMap::new();
 
         for (category, compat) in self.iter_char_categories(ch) {
-            result.insert(category.to_string(), compat.to_vec());
+            result.insert(category, compat);
         }
 
         // Default category if no matches found
@@ -282,6 +463,33 @@ impl DictionaryResource {
         self.unknowns.get(category).map(|v| v.as_slice())
     }
 
+    pub fn get_unknown_entries_by_id(&self, category: CategoryId) -> Option<&[UnknownEntry]> {
+        self.unknown_entries_by_id
+            .get(category as usize)
+            .and_then(|entries| {
+                if entries.is_empty() {
+                    None
+                } else {
+                    Some(entries.as_slice())
+                }
+            })
+    }
+
+    pub fn get_char_category_ids(&self, ch: char) -> Vec<CategoryId> {
+        self.category_index
+            .category_ids_for_char(ch)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn category_name_by_id(&self, category: CategoryId) -> &str {
+        self.category_index.category_name(category)
+    }
+
+    pub fn category_id_by_name(&self, name: &str) -> Option<CategoryId> {
+        self.category_index.category_id(name)
+    }
+
     /// Get morpheme index for mapping FST index IDs to vectors of morpheme IDs
     pub fn get_morpheme_index(&self) -> &[Vec<u32>] {
         &self.morpheme_index
@@ -289,29 +497,38 @@ impl DictionaryResource {
 
     /// Check if unknown word processing should always be invoked for category
     pub fn unknown_invoked_always(&self, category: &str) -> bool {
-        self.char_defs
-            .categories
-            .get(category)
-            .map(|cat| cat.invoke)
+        self.category_index
+            .category_id(category)
+            .map(|id| self.category_index.flags(id).invoke)
             .unwrap_or(false)
+    }
+
+    pub fn unknown_invoked_always_by_id(&self, category: CategoryId) -> bool {
+        self.category_index.flags(category).invoke
     }
 
     /// Check if characters of this category should be grouped together
     pub fn unknown_grouping(&self, category: &str) -> bool {
-        self.char_defs
-            .categories
-            .get(category)
-            .map(|cat| cat.group)
+        self.category_index
+            .category_id(category)
+            .map(|id| self.category_index.flags(id).group)
             .unwrap_or(false)
+    }
+
+    pub fn unknown_grouping_by_id(&self, category: CategoryId) -> bool {
+        self.category_index.flags(category).group
     }
 
     /// Get length constraint for unknown words of this category
     pub fn unknown_length(&self, category: &str) -> i32 {
-        self.char_defs
-            .categories
-            .get(category)
-            .map(|cat| cat.length as i32)
+        self.category_index
+            .category_id(category)
+            .map(|id| i32::from(self.category_index.flags(id).length))
             .unwrap_or(-1)
+    }
+
+    pub fn unknown_length_by_id(&self, category: CategoryId) -> i32 {
+        i32::from(self.category_index.flags(category).length)
     }
 }
 

@@ -210,6 +210,12 @@ impl SystemDictionary {
             .unknown_invoked_always(category)
     }
 
+    pub fn unknown_invoked_always_id(&self, category: u16) -> bool {
+        self.ram_dict
+            .get_resource()
+            .unknown_invoked_always_by_id(category)
+    }
+
     /// Check if characters of this category should be grouped together
     ///
     /// # Arguments  
@@ -221,6 +227,12 @@ impl SystemDictionary {
         self.ram_dict.get_resource().unknown_grouping(category)
     }
 
+    pub fn unknown_grouping_id(&self, category: u16) -> bool {
+        self.ram_dict
+            .get_resource()
+            .unknown_grouping_by_id(category)
+    }
+
     /// Get length constraint for unknown words of this category
     ///
     /// # Arguments
@@ -230,6 +242,11 @@ impl SystemDictionary {
     /// Length constraint (-1 = no limit, positive = max length)
     pub fn unknown_length(&self, category: &str) -> i32 {
         self.ram_dict.get_resource().unknown_length(category)
+    }
+
+    pub fn unknown_length_id(&self, category: u16) -> usize {
+        let len = self.ram_dict.get_resource().unknown_length_by_id(category);
+        if len <= 0 { usize::MAX } else { len as usize }
     }
 
     /// Get unknown word entries for a character category
@@ -250,6 +267,12 @@ impl SystemDictionary {
         self.ram_dict.get_resource().get_unknown_entries(category)
     }
 
+    pub fn get_unknown_entries_by_id(&self, category: u16) -> Option<&[UnknownEntry]> {
+        self.ram_dict
+            .get_resource()
+            .get_unknown_entries_by_id(category)
+    }
+
     /// Get character categories for a given character (Result version)
     ///
     /// Returns the list of character categories that apply to the given character.
@@ -268,8 +291,8 @@ impl SystemDictionary {
 
         for (category, compat_categories) in self.ram_dict.get_resource().iter_char_categories(c) {
             found = true;
-            result.push(category.to_string());
-            result.extend(compat_categories.iter().cloned());
+            result.push(category);
+            result.extend(compat_categories);
         }
 
         if !found {
@@ -277,6 +300,18 @@ impl SystemDictionary {
         }
 
         Ok(result)
+    }
+
+    pub fn get_char_category_ids(&self, c: char) -> Vec<u16> {
+        self.ram_dict.get_resource().get_char_category_ids(c)
+    }
+
+    pub fn category_name_by_id(&self, category: u16) -> &str {
+        self.ram_dict.get_resource().category_name_by_id(category)
+    }
+
+    pub fn category_id_by_name(&self, name: &str) -> Option<u16> {
+        self.ram_dict.get_resource().category_id_by_name(name)
     }
 
     /// Get unknown word entries for a character category (Result version)
