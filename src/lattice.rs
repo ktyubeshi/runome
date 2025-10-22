@@ -805,8 +805,8 @@ impl<'a> Lattice<'a> {
 
         // Initialize all positions as empty first
         for _ in 0..=(size + 1) {
-            snodes.push(Vec::new());
-            enodes.push(Vec::new());
+            snodes.push(Vec::with_capacity(4));
+            enodes.push(Vec::with_capacity(4));
         }
 
         // Position 0: BOS node in snodes
@@ -846,8 +846,8 @@ impl<'a> Lattice<'a> {
             self.enodes.reserve(new_capacity - self.enodes.len());
 
             while self.snodes.len() <= end_pos {
-                self.snodes.push(Vec::new());
-                self.enodes.push(Vec::new());
+                self.snodes.push(Vec::with_capacity(4));
+                self.enodes.push(Vec::with_capacity(4));
             }
         }
     }

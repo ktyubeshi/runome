@@ -260,7 +260,7 @@ impl Dictionary for RAMDictionary {
         // 3. Get morpheme index and dictionary entries
         let morpheme_index = self.resource.get_morpheme_index();
         let entries = self.resource.get_entries();
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(index_ids.len().saturating_mul(2));
 
         // 4. For each index ID, look up the morpheme IDs and resolve to entries
         for index_id in index_ids {

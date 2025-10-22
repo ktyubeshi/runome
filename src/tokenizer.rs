@@ -665,7 +665,7 @@ impl Tokenizer {
         wakati: bool,
         baseform_unk: bool,
     ) -> Result<Vec<TokenizeResult>, RunomeError> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(path.len());
 
         let mut index = 0;
         while index < path.len() {
