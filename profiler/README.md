@@ -46,6 +46,9 @@ The scripts use `text_lemon.txt` as test data for tokenization. This file contai
 To compare Runome vs Janome performance:
 
 ```bash
+# Quick benchmark (arguments are passed directly)
+uv run bench --iterations 300 --warmup 10
+
 # Profile both tokenizers
 python run_cprofile.py
 python run_cprofile.py -janome
