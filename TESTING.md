@@ -57,7 +57,11 @@ To run both the Python and pure Rust benchmarks in one go, invoke:
 tox -e bench
 ```
 
-`tox` now executes the existing `python -m runome.bench` measurements first, then calls the Criterion suite with default flags `--measurement-time 3 --warm-up-time 1`. Override those via `RUNOME_BENCH_RUST_CRITERION_FLAGS`, e.g. `RUNOME_BENCH_RUST_CRITERION_FLAGS="--measurement-time 6 --warm-up-time 2" tox -e bench`.
+`tox` now executes the existing `python -m runome.bench` measurements first, then calls the Criterion suite with lighter defaults suitable for quick smoke checks (`--measurement-time 1 --warm-up-time 0.5 --sample-size 12`). For a deeper run, override them via `RUNOME_BENCH_RUST_CRITERION_FLAGS`, e.g.:
+
+```bash
+RUNOME_BENCH_RUST_CRITERION_FLAGS="--measurement-time 6 --warm-up-time 2 --sample-size 25" tox -e bench
+```
 
 ## Next Steps
 

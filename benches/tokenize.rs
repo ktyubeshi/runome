@@ -61,9 +61,9 @@ fn bench_dictionary_load(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("dictionary_load");
     group
-        .warm_up_time(Duration::from_secs(1))
-        .measurement_time(Duration::from_secs(4))
-        .sample_size(15);
+        .warm_up_time(Duration::from_millis(300))
+        .measurement_time(Duration::from_secs(1))
+        .sample_size(10);
 
     group.bench_function("SystemDictionary::new", |b| {
         b.iter(|| {
@@ -96,9 +96,9 @@ fn bench_tokenize(c: &mut Criterion) {
 
         let mut group = c.benchmark_group(format!("tokenize/{}", fixture.name));
         group
-            .warm_up_time(Duration::from_secs(2))
-            .measurement_time(Duration::from_secs(6))
-            .sample_size(25);
+            .warm_up_time(Duration::from_millis(500))
+            .measurement_time(Duration::from_secs(1))
+            .sample_size(12);
 
         // Measure throughput in bytes for full tokens
         group.throughput(Throughput::Bytes(text.len() as u64));
