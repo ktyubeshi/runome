@@ -112,5 +112,10 @@ def bench_cli() -> None:
 
 __all__ = [
     "bench_cli",
+    "load_text",
     "main",
 ]
+
+
+if __name__ == "__main__":
+    bench_cli()

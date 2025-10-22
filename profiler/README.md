@@ -14,7 +14,7 @@ Performance profiling using Python's cProfile module.
 python run_cprofile.py
 
 # Profile janome tokenizer for comparison
-python run_cprofile.py -janome
+python run_cprofile.py --janome
 ```
 
 **Output:**
@@ -46,12 +46,17 @@ The scripts use `text_lemon.txt` as test data for tokenization. This file contai
 To compare Runome vs Janome performance:
 
 ```bash
+# Tox ensures a fresh virtualenv with deterministic deps
+tox -e bench
+
 # Quick benchmark (arguments are passed directly)
 uv run bench --iterations 300 --warmup 10
 
 # Profile both tokenizers
-python run_cprofile.py
-python run_cprofile.py -janome
+tox -e profile
+
+uv run profile --repeat 20 --limit 30
+uv run profile --janome --repeat 20 --limit 30
 
 # Compare memory usage
 python run_tracemalloc.py
