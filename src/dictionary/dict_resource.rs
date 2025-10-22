@@ -4,10 +4,117 @@ use std::sync::Arc;
 
 use super::{loader, types::*};
 
+#[derive(Debug, Clone)]
+struct PackedConnectionMatrix {
+    rows: u16,
+    cols: u16,
+    data: Box<[i16]>,
+}
+
+pub(crate) struct CharCategoryIter<'a> {
+    ranges: &'a [CodePointRange],
+    index: usize,
+    ch: char,
+}
+
+impl<'a> Iterator for CharCategoryIter<'a> {
+    type Item = (&'a str, &'a [String]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(range) = self.ranges.get(self.index) {
+            self.index += 1;
+            if self.ch >= range.from && self.ch <= range.to {
+                return Some((range.category.as_str(), range.compat_categories.as_slice()));
+            }
+        }
+        None
+    }
+}
+
+impl PackedConnectionMatrix {
+    fn from_rows(rows: &[Vec<i16>]) -> Result<Self, RunomeError> {
+        if rows.is_empty() {
+            return Ok(Self {
+                rows: 0,
+                cols: 0,
+                data: Vec::new().into_boxed_slice(),
+            });
+        }
+
+        let cols = rows[0].len();
+        if cols == 0 {
+            return Ok(Self {
+                rows: rows.len() as u16,
+                cols: 0,
+                data: Vec::new().into_boxed_slice(),
+            });
+        }
+
+        if rows.len() > u16::MAX as usize || cols > u16::MAX as usize {
+            return Err(RunomeError::DictValidationError {
+                reason: format!(
+                    "Connection matrix dimensions exceed supported range: {}x{}",
+                    rows.len(),
+                    cols
+                ),
+            });
+        }
+
+        let mut data = Vec::with_capacity(rows.len().saturating_mul(cols));
+        for (idx, row) in rows.iter().enumerate() {
+            if row.len() != cols {
+                return Err(RunomeError::DictValidationError {
+                    reason: format!(
+                        "Connection matrix row {} has inconsistent length: {} vs expected {}",
+                        idx,
+                        row.len(),
+                        cols
+                    ),
+                });
+            }
+            data.extend_from_slice(row);
+        }
+
+        Ok(Self {
+            rows: rows.len() as u16,
+            cols: cols as u16,
+            data: data.into_boxed_slice(),
+        })
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    #[inline]
+    fn rows(&self) -> usize {
+        self.rows as usize
+    }
+
+    #[inline]
+    fn cols(&self) -> usize {
+        self.cols as usize
+    }
+
+    #[inline]
+    fn get(&self, left_id: u16, right_id: u16) -> Option<i16> {
+        let left = left_id as usize;
+        let right = right_id as usize;
+        let cols = self.cols();
+        if left < self.rows() && right < cols {
+            let idx = left * cols + right;
+            Some(self.data[idx])
+        } else {
+            None
+        }
+    }
+}
+
 /// Container for all dictionary resources
 pub struct DictionaryResource {
     entries: Vec<DictEntry>,
-    connections: ConnectionMatrix,
+    connections: PackedConnectionMatrix,
     connections_arc: Arc<Vec<Vec<i16>>>, // Shared reference for user dictionaries
     char_defs: CharDefinitions,
     unknowns: UnknownEntries,
@@ -20,8 +127,9 @@ impl DictionaryResource {
         loader::validate_sysdic_directory(sysdic_dir)?;
 
         let entries = loader::load_entries(sysdic_dir)?;
-        let connections = loader::load_connections(sysdic_dir)?;
-        let connections_arc = Arc::new(connections.clone()); // Share with user dictionaries
+        let connections_rows = loader::load_connections(sysdic_dir)?;
+        let connections_arc = Arc::new(connections_rows);
+        let connections = PackedConnectionMatrix::from_rows(&connections_arc)?;
         let char_defs = loader::load_char_definitions(sysdic_dir)?;
         let unknowns = loader::load_unknown_entries(sysdic_dir)?;
         let morpheme_index = loader::load_morpheme_index(sysdic_dir)?;
@@ -59,21 +167,6 @@ impl DictionaryResource {
             });
         }
 
-        // Check that all rows in connection matrix have same length
-        let first_row_len = self.connections[0].len();
-        for (i, row) in self.connections.iter().enumerate() {
-            if row.len() != first_row_len {
-                return Err(RunomeError::DictValidationError {
-                    reason: format!(
-                        "Connection matrix row {} has inconsistent length: {} vs expected {}",
-                        i,
-                        row.len(),
-                        first_row_len
-                    ),
-                });
-            }
-        }
-
         // Validate character definitions
         if self.char_defs.categories.is_empty() {
             return Err(RunomeError::DictValidationError {
@@ -100,7 +193,11 @@ impl DictionaryResource {
         }
 
         // Validate entry IDs are within reasonable bounds for connection matrix
-        let max_id = (self.connections.len() - 1) as u16;
+        let max_id = self.connections.rows().checked_sub(1).ok_or_else(|| {
+            RunomeError::DictValidationError {
+                reason: "Connection matrix must have at least one row".to_string(),
+            }
+        })? as u16;
         for (i, entry) in self.entries.iter().enumerate() {
             if entry.left_id > max_id {
                 return Err(RunomeError::DictValidationError {
@@ -131,9 +228,7 @@ impl DictionaryResource {
     /// Get connection cost between left and right part-of-speech IDs
     pub fn get_connection_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError> {
         self.connections
-            .get(left_id as usize)
-            .and_then(|row| row.get(right_id as usize))
-            .copied()
+            .get(left_id, right_id)
             .ok_or(RunomeError::InvalidConnectionId { left_id, right_id })
     }
 
@@ -150,12 +245,18 @@ impl DictionaryResource {
 
     /// Get character category for a given character (returns first match)
     pub fn get_char_category(&self, ch: char) -> Option<&CharCategory> {
-        for range in &self.char_defs.code_ranges {
-            if ch >= range.from && ch <= range.to {
-                return self.char_defs.categories.get(&range.category);
-            }
+        self.iter_char_categories(ch)
+            .next()
+            .and_then(|(category, _)| self.char_defs.categories.get(category))
+    }
+
+    #[inline]
+    pub(crate) fn iter_char_categories(&self, ch: char) -> CharCategoryIter<'_> {
+        CharCategoryIter {
+            ranges: &self.char_defs.code_ranges,
+            index: 0,
+            ch,
         }
-        None
     }
 
     /// Get all character categories for a given character
@@ -164,11 +265,8 @@ impl DictionaryResource {
     pub fn get_char_categories(&self, ch: char) -> std::collections::HashMap<String, Vec<String>> {
         let mut result = std::collections::HashMap::new();
 
-        // Find all matching code point ranges for this character
-        for range in &self.char_defs.code_ranges {
-            if ch >= range.from && ch <= range.to {
-                result.insert(range.category.clone(), range.compat_categories.clone());
-            }
+        for (category, compat) in self.iter_char_categories(ch) {
+            result.insert(category.to_string(), compat.to_vec());
         }
 
         // Default category if no matches found
@@ -268,7 +366,7 @@ mod tests {
             "Should have substantial number of entries"
         );
         assert!(
-            dict.connections.len() > 100,
+            dict.connections.rows() > 100,
             "Should have substantial connection matrix"
         );
         assert!(
@@ -378,7 +476,7 @@ mod tests {
         );
 
         // Test boundary cases
-        let max_id = (dict.connections.len() - 1) as u16;
+        let max_id = (dict.connections.rows() - 1) as u16;
         let boundary_cost = dict.get_connection_cost(max_id, max_id);
         assert!(
             boundary_cost.is_ok(),
@@ -606,11 +704,11 @@ mod tests {
         let dict = DictionaryResource::load(&sysdic_path).expect("Failed to load dictionary");
 
         // Verify connection matrix is square
-        let rows = dict.connections.len();
-        for (i, row) in dict.connections.iter().enumerate() {
+        let rows = dict.connections.rows();
+        for (i, row) in dict.connections_arc.iter().enumerate() {
             assert_eq!(
                 row.len(),
-                dict.connections[0].len(),
+                dict.connections.cols(),
                 "Connection matrix row {} has inconsistent length",
                 i
             );

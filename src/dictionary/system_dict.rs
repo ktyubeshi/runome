@@ -1,7 +1,7 @@
-use once_cell::sync::Lazy;
+use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::{Dictionary, DictionaryResource, RAMDictionary};
 use crate::dictionary::types::{DictEntry, UnknownEntry};
@@ -18,8 +18,7 @@ pub struct SystemDictionary {
 }
 
 /// Singleton instance with thread-safe lazy initialization
-static SYSTEM_DICT_INSTANCE: Lazy<Arc<Mutex<Option<Arc<SystemDictionary>>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(None)));
+static SYSTEM_DICT_INSTANCE: OnceCell<Arc<SystemDictionary>> = OnceCell::new();
 
 impl SystemDictionary {
     /// Get the sysdic path, trying bundled location first, then relative path
@@ -113,33 +112,12 @@ impl SystemDictionary {
     /// * `Ok(Arc<SystemDictionary>)` - Shared reference to singleton instance
     /// * `Err(RunomeError)` - Error if initialization fails
     pub fn instance() -> Result<Arc<SystemDictionary>, RunomeError> {
-        let instance_lock =
-            SYSTEM_DICT_INSTANCE
-                .lock()
-                .map_err(|_| RunomeError::SystemDictInitError {
-                    reason: "Failed to acquire SystemDictionary lock".to_string(),
-                })?;
-
-        if let Some(ref instance) = *instance_lock {
-            return Ok(Arc::clone(instance));
-        }
-
-        drop(instance_lock);
-
-        // Create new instance using sysdic path resolution
-        let sysdic_path = Self::get_sysdic_path();
-        let new_instance = Arc::new(Self::new(&sysdic_path)?);
-
-        let mut instance_lock =
-            SYSTEM_DICT_INSTANCE
-                .lock()
-                .map_err(|_| RunomeError::SystemDictInitError {
-                    reason: "Failed to acquire SystemDictionary lock for initialization"
-                        .to_string(),
-                })?;
-
-        *instance_lock = Some(new_instance.clone());
-        Ok(new_instance)
+        SYSTEM_DICT_INSTANCE
+            .get_or_try_init(|| {
+                let sysdic_path = Self::get_sysdic_path();
+                Ok(Arc::new(Self::new(&sysdic_path)?))
+            })
+            .map(Arc::clone)
     }
 
     /// Create new SystemDictionary from sysdic directory
@@ -285,13 +263,17 @@ impl SystemDictionary {
     /// * `Ok(Vec<String>)` - Vector of category names that apply to this character
     /// * `Err(RunomeError)` - Error if character classification fails
     pub fn get_char_categories_result(&self, c: char) -> Result<Vec<String>, RunomeError> {
-        let categories = self.get_char_categories(c);
         let mut result = Vec::new();
+        let mut found = false;
 
-        // Add primary categories and their compatible categories
-        for (category, compat_categories) in categories {
-            result.push(category);
-            result.extend(compat_categories);
+        for (category, compat_categories) in self.ram_dict.get_resource().iter_char_categories(c) {
+            found = true;
+            result.push(category.to_string());
+            result.extend(compat_categories.iter().cloned());
+        }
+
+        if !found {
+            result.push("DEFAULT".to_string());
         }
 
         Ok(result)

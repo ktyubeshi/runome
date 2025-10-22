@@ -1,4 +1,5 @@
 use fst::Map;
+use fst::raw::{Fst, Output};
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
@@ -135,38 +136,44 @@ impl Matcher {
             return Ok((false, Vec::new()));
         }
 
-        // Pre-allocate with reasonable capacity to reduce reallocations
-        let mut all_index_ids = Vec::with_capacity(word.chars().count());
+        let mut outputs = match &self.fst {
+            FstBacking::Owned(map) => Self::collect_prefix_outputs(map.as_fst(), word),
+            FstBacking::Mapped(map) => Self::collect_prefix_outputs(map.as_fst(), word),
+        };
 
-        // Use FST's range query for more efficient prefix matching
-        // This avoids repeated FST lookups for each prefix
-        let mut last_byte_pos = 0;
-
-        for (byte_pos, _) in word.char_indices().skip(1) {
-            let prefix = &word[..byte_pos];
-            if let Some(index_id) = self.fst.get(prefix) {
-                all_index_ids.push(index_id);
-            } else {
-                break; // No more prefixes match, exit early
-            }
-            last_byte_pos = byte_pos;
-        }
-
-        // Don't forget the full word
-        if last_byte_pos < word.len() {
-            if let Some(index_id) = self.fst.get(word) {
-                all_index_ids.push(index_id);
-            }
-        }
-
-        if all_index_ids.is_empty() {
+        if outputs.is_empty() {
             Ok((false, Vec::new()))
         } else {
-            // Remove duplicates and sort
-            all_index_ids.sort_unstable();
-            all_index_ids.dedup();
-            Ok((true, all_index_ids))
+            outputs.sort_unstable();
+            outputs.dedup();
+            Ok((true, outputs))
         }
+    }
+
+    fn collect_prefix_outputs<D: AsRef<[u8]>>(fst: &Fst<D>, word: &str) -> Vec<u64> {
+        let mut node = fst.root();
+        let mut out = Output::zero();
+        let mut outputs = Vec::new();
+
+        if node.is_final() {
+            outputs.push(out.cat(node.final_output()).value());
+        }
+
+        for &b in word.as_bytes() {
+            match node.find_input(b) {
+                Some(i) => {
+                    let transition = node.transition(i);
+                    out = out.cat(transition.out);
+                    node = fst.node(transition.addr);
+                    if node.is_final() {
+                        outputs.push(out.cat(node.final_output()).value());
+                    }
+                }
+                None => break,
+            }
+        }
+
+        outputs
     }
 
     /// Decode FST index ID to morpheme IDs using separate morpheme index

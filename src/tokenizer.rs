@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::dictionary::{Dictionary, SystemDictionary, UserDictionary};
+use crate::dictionary::{DictEntry, Dictionary, SystemDictionary, UserDictionary};
 use crate::error::RunomeError;
 use crate::intern;
 use crate::lattice::{Lattice, LatticeNode, NodeType};
@@ -269,6 +269,54 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
+    fn surface_len_with_limit(surface: &str, limit: usize) -> Option<usize> {
+        if limit == 0 {
+            return None;
+        }
+        let mut len = 0usize;
+        for _ in surface.chars() {
+            len += 1;
+            if len > limit {
+                return None;
+            }
+        }
+        if len == 0 { None } else { Some(len) }
+    }
+
+    fn emit_dictionary_entries<'a>(
+        lattice: &mut Lattice<'a>,
+        entries: &[&DictEntry],
+        node_type: NodeType,
+        max_char_len: usize,
+    ) -> Result<bool, RunomeError> {
+        let mut emitted = false;
+
+        for entry in entries.iter().copied() {
+            if Self::surface_len_with_limit(&entry.surface, max_char_len).is_none() {
+                continue;
+            }
+
+            let dict_node = Box::new(crate::lattice::UnknownNode::from_dict_entry(
+                &entry.surface,
+                entry.left_id,
+                entry.right_id,
+                entry.cost,
+                &entry.part_of_speech,
+                &entry.inflection_type,
+                &entry.inflection_form,
+                &entry.base_form,
+                &entry.reading,
+                &entry.phonetic,
+                node_type.clone(),
+            ));
+
+            lattice.add(dict_node)?;
+            emitted = true;
+        }
+
+        Ok(emitted)
+    }
+
     /// Create a new Tokenizer instance
     ///
     /// # Arguments
@@ -448,55 +496,37 @@ impl Tokenizer {
 
             // Try all substrings starting at the current position (up to 15 chars)
             let max_char_len = std::cmp::min(total_chars - char_pos, 15);
-            for char_len in 1..=max_char_len {
-                let substring = chunk.slice(char_pos, char_pos + char_len);
+            if max_char_len > 0 {
+                let search_end = char_pos + max_char_len;
+                let search_slice = chunk.slice(char_pos, search_end);
 
                 // 1. User dictionary has precedence
                 if let Some(user_dic) = &self.user_dic {
-                    if let Ok(entries) = user_dic.lookup(substring) {
-                        if !entries.is_empty() {
+                    if let Ok(entries) = user_dic.lookup(search_slice) {
+                        if !entries.is_empty()
+                            && Self::emit_dictionary_entries(
+                                lattice,
+                                &entries,
+                                NodeType::UserDict,
+                                max_char_len,
+                            )?
+                        {
                             matched = true;
-                            for entry in entries {
-                                let user_node =
-                                    Box::new(crate::lattice::UnknownNode::from_dict_entry(
-                                        &entry.surface,
-                                        entry.left_id,
-                                        entry.right_id,
-                                        entry.cost,
-                                        &entry.part_of_speech,
-                                        &entry.inflection_type,
-                                        &entry.inflection_form,
-                                        &entry.base_form,
-                                        &entry.reading,
-                                        &entry.phonetic,
-                                        NodeType::UserDict,
-                                    ));
-                                lattice.add(user_node)?;
-                            }
                         }
                     }
                 }
 
                 // 2. System dictionary lookup
-                if let Ok(entries) = self.sys_dic.lookup(substring) {
-                    if !entries.is_empty() {
+                if let Ok(entries) = self.sys_dic.lookup(search_slice) {
+                    if !entries.is_empty()
+                        && Self::emit_dictionary_entries(
+                            lattice,
+                            &entries,
+                            NodeType::SysDict,
+                            max_char_len,
+                        )?
+                    {
                         matched = true;
-                        for entry in entries {
-                            let dict_node = Box::new(crate::lattice::UnknownNode::from_dict_entry(
-                                &entry.surface,
-                                entry.left_id,
-                                entry.right_id,
-                                entry.cost,
-                                &entry.part_of_speech,
-                                &entry.inflection_type,
-                                &entry.inflection_form,
-                                &entry.base_form,
-                                &entry.reading,
-                                &entry.phonetic,
-                                NodeType::SysDict,
-                            ));
-                            lattice.add(dict_node)?;
-                        }
                     }
                 }
             }
