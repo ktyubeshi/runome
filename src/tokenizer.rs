@@ -439,10 +439,12 @@ impl Tokenizer {
         }
 
         let mut char_pos = 0;
+        let char_categories_cache = self.precompute_char_categories(chunk)?;
+        debug_assert_eq!(char_categories_cache.len(), total_chars);
 
         while char_pos < total_chars {
-            let current_char = chunk.char_at(char_pos);
             let mut matched = false;
+            let char_categories = &char_categories_cache[char_pos];
 
             // Try all substrings starting at the current position (up to 15 chars)
             let max_char_len = std::cmp::min(total_chars - char_pos, 15);
@@ -500,26 +502,29 @@ impl Tokenizer {
             }
 
             // 2. Unknown word processing follows Python Janome logic
-            let char_categories = self.sys_dic.get_char_categories_result(current_char)?;
-
-            for category in &char_categories {
+            for category in char_categories {
+                let category_str = category.as_str();
                 let should_invoke = !matched
                     || self
                         .sys_dic
-                        .unknown_invoked_always_result(category)
+                        .unknown_invoked_always_result(category_str)
                         .unwrap_or(false);
 
                 if !should_invoke {
                     continue;
                 }
 
-                let unknown_entries = match self.sys_dic.get_unknown_entries_result(category) {
+                let unknown_entries = match self.sys_dic.get_unknown_entries_result(category_str) {
                     Ok(entries) => entries,
                     Err(_) => continue,
                 };
 
-                let grouped_surface =
-                    self.build_grouped_surface_python_style(chunk, char_pos, category)?;
+                let grouped_surface = self.build_grouped_surface_python_style(
+                    chunk,
+                    char_pos,
+                    category_str,
+                    &char_categories_cache,
+                )?;
 
                 let base_form_option = if baseform_unk {
                     Some(grouped_surface.as_str())
@@ -561,6 +566,7 @@ impl Tokenizer {
         chunk: &ChunkCharView<'_>,
         start_char_index: usize,
         category: &str,
+        char_categories_cache: &[Vec<String>],
     ) -> Result<String, RunomeError> {
         if start_char_index >= chunk.len_chars() {
             return Ok(String::new());
@@ -573,7 +579,9 @@ impl Tokenizer {
             category_max_length
         };
 
-        let mut buf = String::new();
+        let remaining = chunk.len_chars() - start_char_index;
+        let target_capacity = max_length.min(remaining).max(1);
+        let mut buf = String::with_capacity(target_capacity);
         buf.push(chunk.char_at(start_char_index));
         let mut current_len = 1;
 
@@ -582,14 +590,17 @@ impl Tokenizer {
                 break;
             }
 
-            let ch = chunk.char_at(idx);
-            let c_categories = self.sys_dic.get_char_categories_result(ch)?;
+            let c_categories = match char_categories_cache.get(idx) {
+                Some(categories) => categories,
+                None => break,
+            };
 
             let same_category = c_categories.iter().any(|cat| cat == category);
-            let compatible = self.is_compatible_category_python_style(category, &c_categories);
+            let compatible =
+                self.is_compatible_category_python_style(category, c_categories.as_slice());
 
             if same_category || compatible {
-                buf.push(ch);
+                buf.push(chunk.char_at(idx));
                 current_len += 1;
             } else {
                 break;
@@ -629,6 +640,22 @@ impl Tokenizer {
                 .any(|cat| cat == "SYMBOL" || cat == "DEFAULT"),
             _ => false,
         }
+    }
+
+    /// Pre-compute character categories for each character in the chunk.
+    fn precompute_char_categories(
+        &self,
+        chunk: &ChunkCharView<'_>,
+    ) -> Result<Vec<Vec<String>>, RunomeError> {
+        let total_chars = chunk.len_chars();
+        let mut cache = Vec::with_capacity(total_chars);
+
+        for idx in 0..total_chars {
+            let ch = chunk.char_at(idx);
+            cache.push(self.sys_dic.get_char_categories_result(ch)?);
+        }
+
+        Ok(cache)
     }
 
     /// Convert a path of lattice nodes to tokens
