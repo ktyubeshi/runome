@@ -6,8 +6,12 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
-    let sysdic_src = find_sysdic(&manifest_dir)
-        .unwrap_or_else(|| panic!("sysdic directory not found under manifest dir: {}", manifest_dir));
+    let sysdic_src = find_sysdic(&manifest_dir).unwrap_or_else(|| {
+        panic!(
+            "sysdic directory not found under manifest dir: {}",
+            manifest_dir
+        )
+    });
     let sysdic_dst = Path::new(&out_dir).join("sysdic");
 
     // Create destination directory

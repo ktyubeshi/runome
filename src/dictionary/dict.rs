@@ -1,4 +1,6 @@
 use fst::Map;
+use fst::raw::Mmap;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::{DictionaryResource, loader, types::DictEntry};
@@ -41,8 +43,22 @@ pub trait Dictionary {
 ///
 /// Handles finite state transducer operations to efficiently map
 /// surface form strings to morpheme IDs using the fst crate.
+enum FstBacking {
+    Owned(Map<Vec<u8>>),
+    Mapped(Map<Mmap>),
+}
+
+impl FstBacking {
+    fn get(&self, key: &str) -> Option<u64> {
+        match self {
+            Self::Owned(map) => map.get(key),
+            Self::Mapped(map) => map.get(key),
+        }
+    }
+}
+
 pub struct Matcher {
-    fst: Map<Vec<u8>>,
+    fst: FstBacking,
 }
 
 impl Matcher {
@@ -58,7 +74,19 @@ impl Matcher {
         let fst = Map::new(fst_bytes).map_err(|e| RunomeError::DictValidationError {
             reason: format!("Failed to create FST: {}", e),
         })?;
-        Ok(Self { fst })
+        Ok(Self {
+            fst: FstBacking::Owned(fst),
+        })
+    }
+
+    /// Create new Matcher from on-disk FST using memory mapping
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, RunomeError> {
+        let fst = Map::from_path(path).map_err(|e| RunomeError::DictValidationError {
+            reason: format!("Failed to memory-map FST: {}", e),
+        })?;
+        Ok(Self {
+            fst: FstBacking::Mapped(fst),
+        })
     }
 
     /// Run FST matching on input word
@@ -183,9 +211,9 @@ impl RAMDictionary {
         resource: DictionaryResource,
         sysdic_dir: &std::path::Path,
     ) -> Result<Self, RunomeError> {
-        // Load FST bytes directly using loader
-        let fst_bytes = loader::load_fst_bytes(sysdic_dir)?;
-        let matcher = Matcher::new(fst_bytes)?;
+        // Map FST file directly for lookup (avoids loading entire file into memory)
+        let fst_path = loader::fst_file_path(sysdic_dir)?;
+        let matcher = Matcher::from_path(&fst_path)?;
 
         Ok(Self { resource, matcher })
     }
@@ -300,6 +328,15 @@ mod tests {
         );
 
         let matcher = matcher_result.unwrap();
+
+        // Test Matcher creation using memory-mapped file
+        let fst_path = loader::fst_file_path(&sysdic_path).expect("Failed to resolve FST path");
+        let mmap_matcher = Matcher::from_path(&fst_path);
+        assert!(
+            mmap_matcher.is_ok(),
+            "Failed to create memory-mapped Matcher: {:?}",
+            mmap_matcher.err()
+        );
 
         // Test basic functionality with a simple run
         let run_result = matcher.run("test", true);

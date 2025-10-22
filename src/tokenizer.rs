@@ -158,6 +158,58 @@ pub enum TokenizeResult {
     Surface(String),
 }
 
+/// Precomputed view over a chunk's characters and byte offsets
+struct ChunkCharView<'a> {
+    text: &'a str,
+    offsets: Vec<usize>,
+    chars: Vec<char>,
+}
+
+impl<'a> ChunkCharView<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut offsets = Vec::with_capacity(text.len().saturating_add(1));
+        let mut chars = Vec::with_capacity(text.len());
+
+        for (byte_offset, ch) in text.char_indices() {
+            offsets.push(byte_offset);
+            chars.push(ch);
+        }
+        offsets.push(text.len());
+
+        Self {
+            text,
+            offsets,
+            chars,
+        }
+    }
+
+    #[inline]
+    fn len_chars(&self) -> usize {
+        self.chars.len()
+    }
+
+    #[inline]
+    fn slice(&self, start: usize, end: usize) -> &'a str {
+        debug_assert!(start <= end);
+        let start_byte = if start < self.offsets.len() {
+            self.offsets[start]
+        } else {
+            self.text.len()
+        };
+        let end_byte = if end < self.offsets.len() {
+            self.offsets[end]
+        } else {
+            *self.offsets.last().unwrap_or(&self.text.len())
+        };
+        &self.text[start_byte..end_byte]
+    }
+
+    #[inline]
+    fn char_at(&self, index: usize) -> char {
+        self.chars[index]
+    }
+}
+
 impl fmt::Display for TokenizeResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -349,17 +401,18 @@ impl Tokenizer {
 
         // Process only the chunk we determined
         let chunk_text = &text[..chunk_end];
+        let chunk_view = ChunkCharView::new(chunk_text);
 
         // Create lattice for this chunk
         // Add +1 to lattice size to account for EOS position
-        let lattice_size = chunk_text.chars().count() + 1;
+        let lattice_size = chunk_view.len_chars() + 1;
         let mut lattice = Lattice::new(
             lattice_size,
             self.sys_dic.clone() as Arc<dyn crate::dictionary::Dictionary>,
         );
 
         // Add dictionary entries to lattice
-        self.add_dictionary_entries(&mut lattice, chunk_text, baseform_unk)?;
+        self.add_dictionary_entries(&mut lattice, &chunk_view, baseform_unk)?;
 
         // Process the lattice using Viterbi algorithm
         // Note: we don't call lattice.forward() here because we've already advanced incrementally
@@ -377,44 +430,31 @@ impl Tokenizer {
     fn add_dictionary_entries<'a>(
         &self,
         lattice: &mut Lattice<'a>,
-        text: &str,
+        chunk: &ChunkCharView<'_>,
         baseform_unk: bool,
     ) -> Result<(), RunomeError> {
-        let _text_bytes = text.as_bytes();
-        let text_len = text.len();
-        let mut pos = 0;
+        let total_chars = chunk.len_chars();
+        if total_chars == 0 {
+            return Ok(());
+        }
 
-        // Python-style incremental processing: while pos < len(s):
-        while pos < text_len {
-            let _current_pos = lattice.position();
+        let mut char_pos = 0;
 
-            // Extract current character for unknown word processing
-            let current_char = text[pos..].chars().next().unwrap();
+        while char_pos < total_chars {
+            let current_char = chunk.char_at(char_pos);
             let mut matched = false;
 
-            // 1. DICTIONARY LOOKUP - try all possible substrings starting at current position
-            // We need to work with character-based lengths, not byte-based
-            let remaining_text = &text[pos..];
-            let char_indices: Vec<_> = remaining_text.char_indices().collect();
+            // Try all substrings starting at the current position (up to 15 chars)
+            let max_char_len = std::cmp::min(total_chars - char_pos, 15);
+            for char_len in 1..=max_char_len {
+                let substring = chunk.slice(char_pos, char_pos + char_len);
 
-            for char_len in 1..=std::cmp::min(char_indices.len(), 15) {
-                // Max word length limit
-                // Get substring by character count, not byte count
-                let end_byte = if char_len < char_indices.len() {
-                    char_indices[char_len].0
-                } else {
-                    remaining_text.len()
-                };
-                let substring = &remaining_text[..end_byte];
-
-                // Look up dictionary entries for this substring
-                // 1. Check user dictionary first (higher priority)
+                // 1. User dictionary has precedence
                 if let Some(user_dic) = &self.user_dic {
-                    match user_dic.lookup(substring) {
-                        Ok(entries) if !entries.is_empty() => {
+                    if let Ok(entries) = user_dic.lookup(substring) {
+                        if !entries.is_empty() {
                             matched = true;
                             for entry in entries {
-                                // Create user dictionary node - optimized with string interning
                                 let user_node =
                                     Box::new(crate::lattice::UnknownNode::from_dict_entry(
                                         &entry.surface,
@@ -432,18 +472,14 @@ impl Tokenizer {
                                 lattice.add(user_node)?;
                             }
                         }
-                        _ => {
-                            // No entries found in user dictionary
-                        }
                     }
                 }
 
-                // 2. Check system dictionary (lower priority)
-                match self.sys_dic.lookup(substring) {
-                    Ok(entries) if !entries.is_empty() => {
+                // 2. System dictionary lookup
+                if let Ok(entries) = self.sys_dic.lookup(substring) {
+                    if !entries.is_empty() {
                         matched = true;
                         for entry in entries {
-                            // Create system dictionary node - optimized with string interning
                             let dict_node = Box::new(crate::lattice::UnknownNode::from_dict_entry(
                                 &entry.surface,
                                 entry.left_id,
@@ -460,91 +496,58 @@ impl Tokenizer {
                             lattice.add(dict_node)?;
                         }
                     }
-                    _ => {
-                        // No entries found for this substring
-                    }
                 }
             }
 
-            // 2. UNKNOWN WORD PROCESSING - Python logic
+            // 2. Unknown word processing follows Python Janome logic
             let char_categories = self.sys_dic.get_char_categories_result(current_char)?;
 
             for category in &char_categories {
-                // Python: if matched and not self.sys_dic.unknown_invoked_always(cate): continue
                 let should_invoke = !matched
                     || self
                         .sys_dic
                         .unknown_invoked_always_result(category)
                         .unwrap_or(false);
 
-                if should_invoke {
-                    // Get unknown word entries for this category
-                    let unknown_entries = match self.sys_dic.get_unknown_entries_result(category) {
-                        Ok(entries) => entries,
-                        Err(_) => continue,
-                    };
+                if !should_invoke {
+                    continue;
+                }
 
-                    // Build unknown word following Python's exact logic
-                    let grouped_surface =
-                        self.build_grouped_surface_python_style(text, pos, category)?;
+                let unknown_entries = match self.sys_dic.get_unknown_entries_result(category) {
+                    Ok(entries) => entries,
+                    Err(_) => continue,
+                };
 
-                    // Create unknown word nodes - highly optimized to reduce cloning
-                    let base_form_option = if baseform_unk {
-                        Some(grouped_surface.as_str())
-                    } else {
-                        None
-                    };
+                let grouped_surface =
+                    self.build_grouped_surface_python_style(chunk, char_pos, category)?;
 
-                    for entry in unknown_entries {
-                        let unknown_node = Box::new(crate::lattice::UnknownNode::for_unknown_word(
-                            grouped_surface.clone(),
-                            entry.left_id,
-                            entry.right_id,
-                            entry.cost,
-                            &entry.part_of_speech,
-                            base_form_option,
-                            NodeType::Unknown,
-                        ));
+                let base_form_option = if baseform_unk {
+                    Some(grouped_surface.as_str())
+                } else {
+                    None
+                };
 
-                        lattice.add(unknown_node)?;
-                    }
+                for entry in unknown_entries {
+                    let unknown_node = Box::new(crate::lattice::UnknownNode::for_unknown_word(
+                        grouped_surface.clone(),
+                        entry.left_id,
+                        entry.right_id,
+                        entry.cost,
+                        &entry.part_of_speech,
+                        base_form_option,
+                        NodeType::Unknown,
+                    ));
+
+                    lattice.add(unknown_node)?;
                 }
             }
 
-            // 3. CRITICAL: Python-style position advancement
-            // Python: pos += lattice.forward()
+            // Advance using lattice result (measured in characters)
             let advancement = lattice.forward();
-
-            // Convert lattice position advancement to byte position in text
-            // This is the key insight - we need to track byte positions in text
-            // while letting the lattice control the advancement
             if advancement > 0 {
-                // Find the byte position corresponding to the lattice advancement
-                let mut char_count = 0;
-                for (_i, _) in text[pos..].char_indices() {
-                    if char_count >= advancement {
-                        break;
-                    }
-                    char_count += 1;
-                }
-                // Move to position after the last character
-                if char_count < advancement {
-                    pos = text_len; // End of string
-                } else {
-                    // Find start of next character
-                    pos = text[pos..]
-                        .char_indices()
-                        .nth(advancement)
-                        .map(|(i, _)| pos + i)
-                        .unwrap_or(text_len);
-                }
+                char_pos = std::cmp::min(char_pos + advancement, total_chars);
             } else {
-                // If no advancement, move by one character to avoid infinite loop
-                pos = text[pos..]
-                    .char_indices()
-                    .nth(1)
-                    .map(|(i, _)| pos + i)
-                    .unwrap_or(text_len);
+                char_pos = std::cmp::min(char_pos + 1, total_chars);
             }
         }
 
@@ -555,45 +558,39 @@ impl Tokenizer {
     /// This version works with string byte positions like Python
     fn build_grouped_surface_python_style(
         &self,
-        text: &str,
-        start_pos: usize,
+        chunk: &ChunkCharView<'_>,
+        start_char_index: usize,
         category: &str,
     ) -> Result<String, RunomeError> {
+        if start_char_index >= chunk.len_chars() {
+            return Ok(String::new());
+        }
+
         let category_max_length = self.sys_dic.unknown_length_result(category)?;
-        let length = if self.sys_dic.unknown_grouping_result(category)? {
+        let max_length = if self.sys_dic.unknown_grouping_result(category)? {
             self.max_unknown_length
         } else {
             category_max_length
         };
 
         let mut buf = String::new();
-        let char_indices: Vec<_> = text[start_pos..].char_indices().collect();
+        buf.push(chunk.char_at(start_char_index));
+        let mut current_len = 1;
 
-        // Add the starting character
-        if let Some((_, first_char)) = char_indices.first() {
-            buf.push(*first_char);
-        }
-
-        // Group consecutive characters following Python's logic
-        for (byte_offset, c) in char_indices.iter().skip(1) {
-            if buf.chars().count() >= length {
+        for idx in (start_char_index + 1)..chunk.len_chars() {
+            if current_len >= max_length {
                 break;
             }
 
-            let abs_pos = start_pos + byte_offset;
-            if abs_pos >= text.len() {
-                break;
-            }
+            let ch = chunk.char_at(idx);
+            let c_categories = self.sys_dic.get_char_categories_result(ch)?;
 
-            // Get character categories for this character
-            let c_categories = self.sys_dic.get_char_categories_result(*c)?;
-
-            // Python logic: if cate in _cates or any(cate in _compat_cates for _compat_cates in _cates.values())
-            let same_category = c_categories.contains(&intern::intern_or_clone(category));
+            let same_category = c_categories.iter().any(|cat| cat == category);
             let compatible = self.is_compatible_category_python_style(category, &c_categories);
 
             if same_category || compatible {
-                buf.push(*c);
+                buf.push(ch);
+                current_len += 1;
             } else {
                 break;
             }

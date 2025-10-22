@@ -243,15 +243,20 @@ impl PyTokenizer {
     #[pyo3(signature = (text, wakati = None, baseform_unk = true))]
     fn tokenize(
         &self,
+        py: Python<'_>,
         text: &str,
         wakati: Option<bool>,
         baseform_unk: bool,
     ) -> PyResult<PyTokenIterator> {
         // Let the Rust tokenizer handle wakati precedence
-        let results: Result<Vec<_>, _> = self
-            .inner
-            .tokenize(text, wakati, Some(baseform_unk))
-            .collect();
+        let tokenizer = self.inner.clone();
+        let text_owned = text.to_owned();
+        let wakati_mode = wakati;
+        let results: Result<Vec<_>, _> = py.allow_threads(move || {
+            tokenizer
+                .tokenize(&text_owned, wakati_mode, Some(baseform_unk))
+                .collect()
+        });
 
         let token_results =
             results.map_err(|e| PyException::new_err(format!("Tokenization failed: {:?}", e)))?;

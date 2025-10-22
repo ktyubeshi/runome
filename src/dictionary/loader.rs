@@ -63,9 +63,14 @@ pub fn load_morpheme_index(sysdic_dir: &Path) -> Result<Vec<Vec<u32>>, RunomeErr
 
 /// Load FST bytes from sysdic directory
 pub fn load_fst_bytes(sysdic_dir: &Path) -> Result<Vec<u8>, RunomeError> {
-    let file_path = validate_file_exists(sysdic_dir, "dic.fst")?;
+    let file_path = fst_file_path(sysdic_dir)?;
     let data = fs::read(&file_path)?;
     Ok(data)
+}
+
+/// Get the path to the FST file in the sysdic directory
+pub fn fst_file_path(sysdic_dir: &Path) -> Result<PathBuf, RunomeError> {
+    validate_file_exists(sysdic_dir, "dic.fst")
 }
 
 /// Validate that sysdic directory exists and is accessible
