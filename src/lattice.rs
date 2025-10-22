@@ -715,6 +715,128 @@ pub struct NodeRef {
     pub index: usize,
 }
 
+#[derive(Debug)]
+pub enum StartNode<'a> {
+    Dict(Node<'a>),
+    Unknown(UnknownNode),
+    Bos(BOS),
+    Eos(EOS),
+}
+
+impl<'a> StartNode<'a> {
+    fn inner_mut(&mut self) -> &mut dyn LatticeNode {
+        match self {
+            StartNode::Dict(node) => node,
+            StartNode::Unknown(node) => node,
+            StartNode::Bos(node) => node,
+            StartNode::Eos(node) => node,
+        }
+    }
+
+    fn inner(&self) -> &dyn LatticeNode {
+        match self {
+            StartNode::Dict(node) => node,
+            StartNode::Unknown(node) => node,
+            StartNode::Bos(node) => node,
+            StartNode::Eos(node) => node,
+        }
+    }
+}
+
+impl<'a> LatticeNode for StartNode<'a> {
+    fn surface(&self) -> &str {
+        self.inner().surface()
+    }
+
+    fn left_id(&self) -> u16 {
+        self.inner().left_id()
+    }
+
+    fn right_id(&self) -> u16 {
+        self.inner().right_id()
+    }
+
+    fn cost(&self) -> i16 {
+        self.inner().cost()
+    }
+
+    fn min_cost(&self) -> i32 {
+        self.inner().min_cost()
+    }
+
+    fn set_min_cost(&mut self, cost: i32) {
+        self.inner_mut().set_min_cost(cost);
+    }
+
+    fn back_pos(&self) -> i32 {
+        self.inner().back_pos()
+    }
+
+    fn set_back_pos(&mut self, pos: i32) {
+        self.inner_mut().set_back_pos(pos);
+    }
+
+    fn back_index(&self) -> i32 {
+        self.inner().back_index()
+    }
+
+    fn set_back_index(&mut self, index: i32) {
+        self.inner_mut().set_back_index(index);
+    }
+
+    fn pos(&self) -> usize {
+        self.inner().pos()
+    }
+
+    fn set_pos(&mut self, pos: usize) {
+        self.inner_mut().set_pos(pos);
+    }
+
+    fn index(&self) -> usize {
+        self.inner().index()
+    }
+
+    fn set_index(&mut self, index: usize) {
+        self.inner_mut().set_index(index);
+    }
+
+    fn node_type(&self) -> NodeType {
+        self.inner().node_type()
+    }
+
+    fn surface_len(&self) -> usize {
+        self.inner().surface_len()
+    }
+
+    fn morph_id(&self) -> Option<usize> {
+        self.inner().morph_id()
+    }
+
+    fn part_of_speech(&self) -> &str {
+        self.inner().part_of_speech()
+    }
+
+    fn inflection_type(&self) -> &str {
+        self.inner().inflection_type()
+    }
+
+    fn inflection_form(&self) -> &str {
+        self.inner().inflection_form()
+    }
+
+    fn base_form(&self) -> &str {
+        self.inner().base_form()
+    }
+
+    fn reading(&self) -> &str {
+        self.inner().reading()
+    }
+
+    fn phonetic(&self) -> &str {
+        self.inner().phonetic()
+    }
+}
+
 /// Connection cost cache key - optimized for fast hashing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CostCacheKey {
@@ -772,7 +894,7 @@ impl ConnectionCostCache {
 
 pub struct Lattice<'a> {
     /// Start nodes at each position - snodes[pos][index]
-    snodes: Vec<Vec<Box<dyn LatticeNode + 'a>>>,
+    snodes: Vec<Vec<StartNode<'a>>>,
     /// Ultra-optimized end nodes with inlined critical data (eliminates indirection)
     enodes: Vec<Vec<CompactEndNode>>,
     /// Current position pointer
@@ -810,13 +932,12 @@ impl<'a> Lattice<'a> {
         }
 
         // Position 0: BOS node in snodes
-        let mut bos = Box::new(BOS::new()) as Box<dyn LatticeNode + 'a>;
+        let mut bos = StartNode::Bos(BOS::new());
         bos.set_pos(0);
         bos.set_index(0);
         snodes[0].push(bos);
 
-        // Position 1: BOS node also appears in enodes[1] for connections
-        let bos_compact = CompactEndNode::from_node(snodes[0][0].as_ref(), 0, 0);
+        let bos_compact = CompactEndNode::from_node(snodes[0][0].inner(), 0, 0);
         enodes[1].push(bos_compact);
 
         Self {
@@ -830,11 +951,10 @@ impl<'a> Lattice<'a> {
     }
 
     /// Get a node by reference - helper method for efficient node access
-    fn get_node(&self, node_ref: &NodeRef) -> Option<&dyn LatticeNode> {
+    fn get_node(&self, node_ref: &NodeRef) -> Option<&StartNode<'a>> {
         self.snodes
             .get(node_ref.pos)
             .and_then(|nodes| nodes.get(node_ref.index))
-            .map(|node| node.as_ref())
     }
 
     /// Ensure lattice capacity for a given position (optimized growth)
@@ -863,7 +983,7 @@ impl<'a> Lattice<'a> {
     }
 
     /// Get reference to start nodes at the specified position
-    pub fn start_nodes(&self, pos: usize) -> Option<&Vec<Box<dyn LatticeNode + 'a>>> {
+    pub fn start_nodes(&self, pos: usize) -> Option<&Vec<StartNode<'a>>> {
         self.snodes.get(pos)
     }
 
@@ -947,7 +1067,7 @@ impl<'a> Lattice<'a> {
     /// - Surface length caching
     /// - Hot path specialization for single predecessor
     /// - Optimized memory access patterns
-    pub fn add(&mut self, mut node: Box<dyn LatticeNode + 'a>) -> Result<(), RunomeError> {
+    pub fn add(&mut self, mut node: StartNode<'a>) -> Result<(), RunomeError> {
         // Initialize Viterbi cost calculation
         let mut min_cost = node.min_cost().saturating_sub(node.cost() as i32);
         let mut best_compact_node: Option<&CompactEndNode> = None;
@@ -1055,7 +1175,7 @@ impl<'a> Lattice<'a> {
 
         // Create ultra-compact end node with inlined critical data (major optimization!)
         let compact_end_node = CompactEndNode::from_node(
-            self.snodes[self.p].last().unwrap().as_ref(),
+            self.snodes[self.p].last().unwrap().inner(),
             self.p,
             node_index,
         );
@@ -1098,7 +1218,7 @@ impl<'a> Lattice<'a> {
     /// * `Err(RunomeError)` if cost calculation fails
     pub fn end(&mut self) -> Result<(), RunomeError> {
         // Python: eos = EOS(self.p)
-        let eos = Box::new(EOS::new(self.p)) as Box<dyn LatticeNode + 'a>;
+        let eos = StartNode::Eos(EOS::new(self.p));
 
         // Python: self.add(eos) - use the same add() method as all other nodes
         self.add(eos)?;
@@ -1116,13 +1236,13 @@ impl<'a> Lattice<'a> {
     /// analysis - it returns the best segmentation of the input text.
     ///
     /// # Returns
-    /// * `Ok(Vec<&dyn LatticeNode>)` - Vector of nodes representing optimal path from BOS to EOS
+    /// * `Ok(Vec<&StartNode<'_>>)` - Vector of nodes representing最適パス
     /// * `Err(RunomeError)` - Error if lattice is invalid or no path exists
     ///
     /// # Path Structure
     /// The returned path always starts with BOS and ends with EOS:
     /// `[BOS, word1, word2, ..., wordN, EOS]`
-    pub fn backward(&self) -> Result<Vec<&dyn LatticeNode>, RunomeError> {
+    pub fn backward(&self) -> Result<Vec<&StartNode<'a>>, RunomeError> {
         // Validate that lattice is properly finalized with EOS
         if self.snodes.is_empty() {
             return Err(RunomeError::DictValidationError {
@@ -1146,7 +1266,7 @@ impl<'a> Lattice<'a> {
         }
 
         // Trace back through optimal path
-        let mut path = Vec::new();
+        let mut path: Vec<&StartNode<'a>> = Vec::new();
         let mut current_pos = last_pos;
         let mut current_index = 0;
 
@@ -1162,7 +1282,7 @@ impl<'a> Lattice<'a> {
                 });
             }
 
-            let current_node = self.snodes[current_pos][current_index].as_ref();
+            let current_node = &self.snodes[current_pos][current_index];
             path.push(current_node);
 
             // Check if we've reached BOS (back_pos = -1)
@@ -1524,7 +1644,7 @@ mod tests {
         let mut lattice = Lattice::new(10, dic);
 
         // Create an unknown node to add (avoids lifetime issues)
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -1536,7 +1656,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         // Add the node to the lattice
         let result = lattice.add(node);
@@ -1570,7 +1690,7 @@ mod tests {
         let mut lattice = Lattice::new(10, dic);
 
         // Create multiple unknown nodes with different surface forms
-        let node1 = Box::new(UnknownNode::new(
+        let node1 = StartNode::Unknown(UnknownNode::new(
             "テスト1".to_string(),
             100,
             200,
@@ -1582,9 +1702,9 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
-        let node2 = Box::new(UnknownNode::new(
+        let node2 = StartNode::Unknown(UnknownNode::new(
             "テスト2".to_string(),
             101,
             201,
@@ -1596,7 +1716,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         // Add both nodes
         assert!(
@@ -1629,7 +1749,7 @@ mod tests {
         let mut lattice = Lattice::new(10, dic);
 
         // Create an unknown node with cost = 150
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -1641,7 +1761,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         // Add the node
         assert!(lattice.add(node).is_ok(), "Adding node should succeed");
@@ -1665,7 +1785,7 @@ mod tests {
         let mut lattice = Lattice::new(10, dic);
 
         // Create an unknown node
-        let unknown_node = Box::new(UnknownNode::new(
+        let unknown_node = StartNode::Unknown(UnknownNode::new(
             "未知語".to_string(),
             300,
             400,
@@ -1677,7 +1797,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         // Add the unknown node
         let result = lattice.add(unknown_node);
@@ -1709,7 +1829,7 @@ mod tests {
         let mut lattice = Lattice::new(2, dic); // Small lattice
 
         // Create an unknown node with long surface (will extend beyond initial size)
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "とても長い表面形".to_string(), // 7 characters
             100,
             200,
@@ -1721,7 +1841,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         // Add the node (should trigger lattice expansion)
         let result = lattice.add(node);
@@ -1762,7 +1882,7 @@ mod tests {
         let mut lattice = Lattice::new(10, dic);
 
         // Add first node at position 1
-        let node1 = Box::new(UnknownNode::new(
+        let node1 = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -1774,14 +1894,14 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
         assert!(lattice.add(node1).is_ok());
 
         // Move to next position
         lattice.forward();
 
         // Add second node that should connect to the first
-        let node2 = Box::new(UnknownNode::new(
+        let node2 = StartNode::Unknown(UnknownNode::new(
             "語".to_string(), // 1 character
             101,
             201,
@@ -1793,7 +1913,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
         assert!(lattice.add(node2).is_ok());
 
         // Verify the second node has optimal predecessor
@@ -1851,7 +1971,7 @@ mod tests {
         let entries = entries_result.unwrap();
 
         for entry in &entries {
-            let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+            let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
             let add_result = lattice.add(node);
             assert!(add_result.is_ok(), "Adding node should succeed");
         }
@@ -1875,7 +1995,7 @@ mod tests {
             let substring_entries = substring_entries_result.unwrap();
 
             for entry in &substring_entries {
-                let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding substring node should succeed");
             }
@@ -1906,7 +2026,7 @@ mod tests {
             let final_entries = final_entries_result.unwrap();
 
             for entry in &final_entries {
-                let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding final node should succeed");
             }
@@ -1942,7 +2062,7 @@ mod tests {
         let mut lattice = Lattice::new(5, dic);
 
         // Add an unknown node first
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -1954,7 +2074,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
         assert!(lattice.add(node).is_ok());
 
         // Move forward to simulate processing
@@ -1995,7 +2115,7 @@ mod tests {
         let mut lattice = Lattice::new(5, dic);
 
         // Add an unknown node with known cost = 150
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -2007,7 +2127,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
         assert!(lattice.add(node).is_ok());
 
         // Move to end position
@@ -2040,7 +2160,7 @@ mod tests {
         let mut lattice = Lattice::new(10, dic); // Large lattice
 
         // Add a short unknown node
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "短".to_string(), // 1 character
             100,
             200,
@@ -2052,7 +2172,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
         assert!(lattice.add(node).is_ok());
 
         // Move forward
@@ -2086,7 +2206,7 @@ mod tests {
         assert_eq!(lattice.position(), 1);
 
         // Add an unknown node to create end nodes (3-character surface)
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(), // 3 characters
             100,
             200,
@@ -2098,7 +2218,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
         assert!(lattice.add(node).is_ok());
 
         // Forward should move to next position with end nodes
@@ -2148,7 +2268,7 @@ mod tests {
         let entries = entries_result.unwrap();
 
         for entry in &entries {
-            let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+            let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
             let add_result = lattice.add(node);
             assert!(add_result.is_ok(), "Adding node should succeed");
         }
@@ -2210,7 +2330,7 @@ mod tests {
             let substring_entries = substring_entries_result.unwrap();
 
             for entry in &substring_entries {
-                let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding substring node should succeed");
             }
@@ -2264,7 +2384,7 @@ mod tests {
             let final_entries = final_entries_result.unwrap();
 
             for entry in &final_entries {
-                let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding final node should succeed");
             }
@@ -2336,7 +2456,7 @@ mod tests {
         let mut lattice = Lattice::new(3, dic);
 
         // Add a simple chain: BOS -> node1 -> EOS
-        let node1 = Box::new(UnknownNode::new(
+        let node1 = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -2348,7 +2468,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         assert!(lattice.add(node1).is_ok());
         lattice.forward();
@@ -2390,7 +2510,7 @@ mod tests {
         let mut lattice = Lattice::new(3, dic);
 
         // Add a node but don't call end()
-        let node = Box::new(UnknownNode::new(
+        let node = StartNode::Unknown(UnknownNode::new(
             "テスト".to_string(),
             100,
             200,
@@ -2402,7 +2522,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         assert!(lattice.add(node).is_ok());
 
@@ -2417,7 +2537,7 @@ mod tests {
         let mut lattice = Lattice::new(5, dic);
 
         // Add multiple nodes: BOS -> node1 -> node2 -> EOS
-        let node1 = Box::new(UnknownNode::new(
+        let node1 = StartNode::Unknown(UnknownNode::new(
             "日本".to_string(),
             100,
             200,
@@ -2429,12 +2549,12 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         assert!(lattice.add(node1).is_ok());
         lattice.forward();
 
-        let node2 = Box::new(UnknownNode::new(
+        let node2 = StartNode::Unknown(UnknownNode::new(
             "語".to_string(),
             200,
             300,
@@ -2446,7 +2566,7 @@ mod tests {
             "*".to_string(),
             "*".to_string(),
             NodeType::Unknown,
-        )) as Box<dyn LatticeNode>;
+        ));
 
         assert!(lattice.add(node2).is_ok());
         lattice.forward();
@@ -2508,7 +2628,7 @@ mod tests {
 
             // Add all entries to lattice
             for entry in &entries {
-                let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding node should succeed");
             }
@@ -2589,7 +2709,7 @@ mod tests {
 
             // Python test: for e in entries: lattice.add(SurfaceNode(e))
             for entry in &entries {
-                let node = Box::new(Node::new(entry, NodeType::SysDict)) as Box<dyn LatticeNode>;
+                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding node should succeed");
             }

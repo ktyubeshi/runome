@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::dictionary::{DictEntry, Dictionary, SystemDictionary, UserDictionary};
 use crate::error::RunomeError;
 use crate::intern;
-use crate::lattice::{Lattice, LatticeNode, NodeType};
+use crate::lattice::{Lattice, LatticeNode, NodeType, StartNode};
 
 /// Constants matching Python Janome tokenizer
 const MAX_CHUNK_SIZE: usize = 1024;
@@ -37,7 +37,7 @@ fn normalize_inflection(value: &str) -> Cow<'static, str> {
 impl Token {
     /// Create a Token from a dictionary node with full morphological information
     /// Uses zero-copy optimization for interned strings
-    pub fn from_dict_node(node: &dyn LatticeNode) -> Self {
+    pub fn from_dict_node<N: LatticeNode + ?Sized>(node: &N) -> Self {
         Self {
             surface: intern::intern_or_cow(node.surface()),
             part_of_speech: intern::intern_or_cow(node.part_of_speech()),
@@ -52,7 +52,7 @@ impl Token {
 
     /// Create a Token from an unknown word node
     /// Uses zero-copy optimization for interned strings (especially asterisks)
-    pub fn from_unknown_node(node: &dyn LatticeNode, baseform_unk: bool) -> Self {
+    pub fn from_unknown_node<N: LatticeNode + ?Sized>(node: &N, baseform_unk: bool) -> Self {
         let base_form = if baseform_unk {
             intern::intern_or_cow(node.surface())
         } else {
@@ -283,8 +283,8 @@ impl Tokenizer {
         if len == 0 { None } else { Some(len) }
     }
 
-    fn emit_dictionary_entries<'a>(
-        lattice: &mut Lattice<'a>,
+    fn emit_dictionary_entries(
+        lattice: &mut Lattice<'_>,
         entries: &[&DictEntry],
         node_type: NodeType,
         max_char_len: usize,
@@ -296,7 +296,7 @@ impl Tokenizer {
                 continue;
             }
 
-            let dict_node = Box::new(crate::lattice::UnknownNode::from_dict_entry(
+            let start_node = StartNode::Unknown(crate::lattice::UnknownNode::from_dict_entry(
                 &entry.surface,
                 entry.left_id,
                 entry.right_id,
@@ -309,8 +309,7 @@ impl Tokenizer {
                 &entry.phonetic,
                 node_type.clone(),
             ));
-
-            lattice.add(dict_node)?;
+            lattice.add(start_node)?;
             emitted = true;
         }
 
@@ -563,15 +562,16 @@ impl Tokenizer {
                 };
 
                 for entry in unknown_entries {
-                    let unknown_node = Box::new(crate::lattice::UnknownNode::for_unknown_word(
-                        grouped_surface.clone(),
-                        entry.left_id,
-                        entry.right_id,
-                        entry.cost,
-                        &entry.part_of_speech,
-                        base_form_option,
-                        NodeType::Unknown,
-                    ));
+                    let unknown_node =
+                        StartNode::Unknown(crate::lattice::UnknownNode::for_unknown_word(
+                            grouped_surface.clone(),
+                            entry.left_id,
+                            entry.right_id,
+                            entry.cost,
+                            &entry.part_of_speech,
+                            base_form_option,
+                            NodeType::Unknown,
+                        ));
 
                     lattice.add(unknown_node)?;
                 }
@@ -691,7 +691,7 @@ impl Tokenizer {
     /// Convert a path of lattice nodes to tokens
     fn path_to_tokens(
         &self,
-        path: &[&dyn LatticeNode],
+        path: &[&StartNode<'_>],
         wakati: bool,
         baseform_unk: bool,
     ) -> Result<Vec<TokenizeResult>, RunomeError> {
@@ -728,7 +728,7 @@ impl Tokenizer {
 
     fn handle_special_cases(
         &self,
-        nodes: &[&dyn LatticeNode],
+        nodes: &[&StartNode<'_>],
         wakati: bool,
         _baseform_unk: bool,
     ) -> Option<(Vec<TokenizeResult>, usize)> {
