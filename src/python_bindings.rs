@@ -828,7 +828,7 @@ impl PyAnalyzer {
         }
 
         // Stage 2: Tokenize the preprocessed text
-        let tokens = self.tokenizer.tokenize(&processed_text, None, true)?;
+        let tokens = self.tokenizer.tokenize(py, &processed_text, None, true)?;
         #[allow(deprecated)]
         let mut current_iter = tokens.into_py(py);
 

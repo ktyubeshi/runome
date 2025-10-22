@@ -1,5 +1,6 @@
 use fst::Map;
-use fst::raw::Mmap;
+use memmap2::Mmap;
+use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -81,8 +82,14 @@ impl Matcher {
 
     /// Create new Matcher from on-disk FST using memory mapping
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, RunomeError> {
-        let fst = Map::from_path(path).map_err(|e| RunomeError::DictValidationError {
+        let file = File::open(path.as_ref()).map_err(|e| RunomeError::DictValidationError {
+            reason: format!("Failed to open FST file: {}", e),
+        })?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| RunomeError::DictValidationError {
             reason: format!("Failed to memory-map FST: {}", e),
+        })?;
+        let fst = Map::new(mmap).map_err(|e| RunomeError::DictValidationError {
+            reason: format!("Failed to create FST from mmap: {}", e),
         })?;
         Ok(Self {
             fst: FstBacking::Mapped(fst),
