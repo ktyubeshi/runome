@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{Dictionary, DictionaryResource, RAMDictionary};
+use super::{CategoryMask, Dictionary, DictionaryResource, RAMDictionary};
 use crate::dictionary::types::{DictEntry, UnknownEntry};
 use crate::error::RunomeError;
 
@@ -304,6 +304,10 @@ impl SystemDictionary {
 
     pub fn get_char_category_ids(&self, c: char) -> Vec<u16> {
         self.ram_dict.get_resource().get_char_category_ids(c)
+    }
+
+    pub(crate) fn get_char_category_mask(&self, c: char) -> CategoryMask {
+        self.ram_dict.get_resource().get_char_category_mask(c)
     }
 
     pub fn category_name_by_id(&self, category: u16) -> &str {

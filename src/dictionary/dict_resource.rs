@@ -7,6 +7,67 @@ use super::{loader, types::*};
 
 type CategoryId = u16;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CategoryMask(u128);
+
+impl CategoryMask {
+    const MAX_BITS: usize = 128;
+
+    #[inline]
+    pub(crate) fn empty() -> Self {
+        Self(0)
+    }
+
+    #[inline]
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    #[inline]
+    pub(crate) fn insert(&mut self, id: CategoryId) {
+        debug_assert!((id as usize) < Self::MAX_BITS);
+        self.0 |= 1u128 << id;
+    }
+
+    #[inline]
+    pub(crate) fn contains(self, id: CategoryId) -> bool {
+        debug_assert!((id as usize) < Self::MAX_BITS);
+        (self.0 & (1u128 << id)) != 0
+    }
+
+    #[inline]
+    pub(crate) fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    #[inline]
+    pub(crate) fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    #[inline]
+    pub(crate) fn iter(self) -> impl Iterator<Item = CategoryId> {
+        CategoryMaskIter { remaining: self.0 }
+    }
+}
+
+struct CategoryMaskIter {
+    remaining: u128,
+}
+
+impl Iterator for CategoryMaskIter {
+    type Item = CategoryId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let bit = self.remaining.trailing_zeros() as u16;
+        self.remaining &= self.remaining - 1;
+        Some(bit)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PackedConnectionMatrix {
     rows: u16,
@@ -26,7 +87,7 @@ struct CodePointCategory {
     start: u32,
     end: u32,
     primary_id: CategoryId,
-    compat_ids: SmallVec<[CategoryId; 4]>,
+    compat_mask: CategoryMask,
 }
 
 #[derive(Debug)]
@@ -42,6 +103,16 @@ impl CategoryIndex {
     fn new(defs: &CharDefinitions) -> Result<Self, RunomeError> {
         let mut names: Vec<String> = defs.categories.keys().cloned().collect();
         names.sort();
+
+        if names.len() > CategoryMask::MAX_BITS {
+            return Err(RunomeError::DictValidationError {
+                reason: format!(
+                    "Too many character categories: {} (max supported: {})",
+                    names.len(),
+                    CategoryMask::MAX_BITS
+                ),
+            });
+        }
 
         let mut name_to_id = std::collections::HashMap::with_capacity(names.len());
         let mut flags = Vec::with_capacity(names.len());
@@ -74,20 +145,17 @@ impl CategoryIndex {
                     ),
                 });
             };
-            let mut compat_ids: SmallVec<[CategoryId; 4]> =
-                SmallVec::with_capacity(range.compat_categories.len());
+            let mut compat_mask = CategoryMask::empty();
             for compat in &range.compat_categories {
                 if let Some(&id) = name_to_id.get(compat) {
-                    compat_ids.push(id);
+                    compat_mask.insert(id);
                 }
             }
-            compat_ids.sort_unstable();
-            compat_ids.dedup();
             code_ranges.push(CodePointCategory {
                 start: range.from as u32,
                 end: range.to as u32,
                 primary_id,
-                compat_ids,
+                compat_mask,
             });
         }
 
@@ -118,9 +186,9 @@ impl CategoryIndex {
         self.flags[id as usize]
     }
 
-    fn category_ids_for_char(&self, ch: char) -> SmallVec<[CategoryId; 8]> {
+    fn category_mask_for_char(&self, ch: char) -> CategoryMask {
         let cp = ch as u32;
-        let mut ids: SmallVec<[CategoryId; 8]> = SmallVec::new();
+        let mut mask = CategoryMask::empty();
         for entry in &self.code_ranges {
             if cp < entry.start {
                 break;
@@ -128,21 +196,22 @@ impl CategoryIndex {
             if cp > entry.end {
                 continue;
             }
-            ids.push(entry.primary_id);
-            ids.extend_from_slice(&entry.compat_ids);
+            mask.insert(entry.primary_id);
+            mask = mask.union(entry.compat_mask);
         }
-        if ids.is_empty() {
+        if mask.is_empty() {
             if let Some(default_id) = self.default_id {
-                ids.push(default_id);
+                mask.insert(default_id);
             }
-        } else {
-            ids.sort_unstable();
-            ids.dedup();
         }
-        ids
+        mask
     }
 
-    fn matches(&self, ch: char) -> Vec<(CategoryId, SmallVec<[CategoryId; 4]>)> {
+    fn category_ids_for_char(&self, ch: char) -> SmallVec<[CategoryId; 8]> {
+        self.category_mask_for_char(ch).iter().collect()
+    }
+
+    fn matches(&self, ch: char) -> Vec<(CategoryId, CategoryMask)> {
         let cp = ch as u32;
         let mut matches = Vec::new();
         for entry in &self.code_ranges {
@@ -152,11 +221,11 @@ impl CategoryIndex {
             if cp > entry.end {
                 continue;
             }
-            matches.push((entry.primary_id, entry.compat_ids.clone()));
+            matches.push((entry.primary_id, entry.compat_mask));
         }
         if matches.is_empty() {
             if let Some(default_id) = self.default_id {
-                matches.push((default_id, SmallVec::new()));
+                matches.push((default_id, CategoryMask::empty()));
             }
         }
         matches
@@ -271,7 +340,7 @@ pub struct DictionaryResource {
     unknowns: UnknownEntries,
     morpheme_index: Vec<Vec<u32>>,
     category_index: CategoryIndex,
-    unknown_entries_by_id: Vec<Vec<UnknownEntry>>,
+    unknown_entries_by_id: Vec<Box<[UnknownEntry]>>,
 }
 
 impl DictionaryResource {
@@ -289,10 +358,10 @@ impl DictionaryResource {
         let category_index = CategoryIndex::new(&char_defs)?;
 
         let mut unknown_entries_by_id = Vec::with_capacity(category_index.len());
-        unknown_entries_by_id.resize_with(category_index.len(), Vec::new);
+        unknown_entries_by_id.resize_with(category_index.len(), || Vec::new().into_boxed_slice());
         for (name, entries_vec) in unknowns.iter() {
             if let Some(id) = category_index.category_id(name) {
-                unknown_entries_by_id[id as usize] = entries_vec.clone();
+                unknown_entries_by_id[id as usize] = entries_vec.clone().into_boxed_slice();
             }
         }
 
@@ -422,10 +491,10 @@ impl DictionaryResource {
             .category_index
             .matches(ch)
             .into_iter()
-            .map(|(primary, compat)| {
+            .map(|(primary, compat_mask)| {
                 let primary_name = self.category_index.category_name(primary).to_string();
-                let compat_names = compat
-                    .into_iter()
+                let compat_names = compat_mask
+                    .iter()
                     .map(|id| self.category_index.category_name(id).to_string())
                     .collect();
                 CategoryIterEntry {
@@ -470,15 +539,19 @@ impl DictionaryResource {
                 if entries.is_empty() {
                     None
                 } else {
-                    Some(entries.as_slice())
+                    Some(entries.as_ref())
                 }
             })
     }
 
+    pub(crate) fn get_char_category_mask(&self, ch: char) -> CategoryMask {
+        self.category_index.category_mask_for_char(ch)
+    }
+
     pub fn get_char_category_ids(&self, ch: char) -> Vec<CategoryId> {
         self.category_index
-            .category_ids_for_char(ch)
-            .into_iter()
+            .category_mask_for_char(ch)
+            .iter()
             .collect()
     }
 
@@ -736,6 +809,35 @@ mod tests {
                 "Character '{}' category length should be reasonable: {}",
                 ch,
                 cat.length
+            );
+        }
+    }
+
+    #[test]
+    fn test_char_category_mask_matches_ids() {
+        let sysdic_path = get_test_sysdic_path();
+
+        if !sysdic_path.exists() {
+            eprintln!(
+                "Skipping test: sysdic directory not found at {:?}",
+                sysdic_path
+            );
+            return;
+        }
+
+        let dict = DictionaryResource::load(&sysdic_path).expect("Failed to load dictionary");
+
+        let sample_chars = ['は', '漢', 'A', '0', '🙂'];
+        for ch in sample_chars {
+            let ids_from_api = dict.get_char_category_ids(ch);
+            let mut ids_from_mask: Vec<_> = dict.get_char_category_mask(ch).iter().collect();
+            ids_from_mask.sort_unstable();
+            let mut ids_api_sorted = ids_from_api.clone();
+            ids_api_sorted.sort_unstable();
+            assert_eq!(
+                ids_from_mask, ids_api_sorted,
+                "Category mask mismatch for character '{}'",
+                ch
             );
         }
     }

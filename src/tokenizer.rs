@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::dictionary::{DictEntry, Dictionary, SystemDictionary, UserDictionary};
+use crate::dictionary::{CategoryMask, DictEntry, Dictionary, SystemDictionary, UserDictionary};
 use crate::error::RunomeError;
 use crate::intern;
 use crate::lattice::{Lattice, LatticeNode, NodeType, StartNode};
@@ -491,7 +491,7 @@ impl Tokenizer {
 
         while char_pos < total_chars {
             let mut matched = false;
-            let char_categories = &char_categories_cache[char_pos];
+            let char_categories = char_categories_cache[char_pos];
 
             // Try all substrings starting at the current position (up to 15 chars)
             let max_char_len = std::cmp::min(total_chars - char_pos, 15);
@@ -531,7 +531,7 @@ impl Tokenizer {
             }
 
             // 2. Unknown word processing follows Python Janome logic
-            for &category_id in char_categories {
+            for category_id in char_categories.iter() {
                 let should_invoke = !matched || self.sys_dic.unknown_invoked_always_id(category_id);
 
                 if !should_invoke {
@@ -591,7 +591,7 @@ impl Tokenizer {
         chunk: &ChunkCharView<'_>,
         start_char_index: usize,
         category_id: u16,
-        char_categories_cache: &[Vec<u16>],
+        char_categories_cache: &[CategoryMask],
     ) -> Result<String, RunomeError> {
         if start_char_index >= chunk.len_chars() {
             return Ok(String::new());
@@ -609,22 +609,20 @@ impl Tokenizer {
         let mut buf = String::with_capacity(target_capacity);
         buf.push(chunk.char_at(start_char_index));
         let mut current_len = 1;
-        let base_categories = &char_categories_cache[start_char_index];
+        let base_mask = char_categories_cache[start_char_index];
 
         for idx in (start_char_index + 1)..chunk.len_chars() {
             if current_len >= max_length {
                 break;
             }
 
-            let c_categories = match char_categories_cache.get(idx) {
-                Some(categories) => categories,
+            let c_mask = match char_categories_cache.get(idx) {
+                Some(mask) => *mask,
                 None => break,
             };
 
-            let same_category = c_categories.iter().any(|&cat| cat == category_id);
-            let compatible = base_categories
-                .iter()
-                .any(|base_id| c_categories.iter().any(|candidate| candidate == base_id));
+            let same_category = c_mask.contains(category_id);
+            let compatible = base_mask.intersects(c_mask);
 
             if same_category || compatible {
                 buf.push(chunk.char_at(idx));
@@ -641,13 +639,13 @@ impl Tokenizer {
     fn precompute_char_categories(
         &self,
         chunk: &ChunkCharView<'_>,
-    ) -> Result<Vec<Vec<u16>>, RunomeError> {
+    ) -> Result<Vec<CategoryMask>, RunomeError> {
         let total_chars = chunk.len_chars();
         let mut cache = Vec::with_capacity(total_chars);
 
         for idx in 0..total_chars {
             let ch = chunk.char_at(idx);
-            cache.push(self.sys_dic.get_char_category_ids(ch));
+            cache.push(self.sys_dic.get_char_category_mask(ch));
         }
 
         Ok(cache)

@@ -1,6 +1,7 @@
 /target
 /mecab-ipadic-2.7.0-20070801
 /sysdic
+/tmp/**
 
 __pycache__
 
@@ -10,3 +11,4 @@ __pycache__
 
 perf.*
 *.profile
+
