@@ -36,6 +36,29 @@ This document mirrors the test-first recovery plan in `tmp/plan.md` and pinpoint
 
 The tests will emit friendly messages when the system dictionary is missing (skip) or when a case is in the known-diff allowlist. Remove the allowlist entry once Runome matches Janome.
 
+## Pure Rust Performance Benchmarks
+
+Run the Criterion benches to measure the tokenizer without the Python bindings:
+
+```bash
+cargo bench --profile release --bench tokenize
+```
+
+This suite performs two types of measurements aligned with the plan in `tmp/plan2.md`:
+
+- `dictionary_load/SystemDictionary::new` isolates the cost of rebuilding the bundled system dictionary.
+- `tokenize/<fixture>/morpheme_*` and `tokenize/<fixture>/wakati_*` report throughput for full tokens and wakati mode respectively, both in MiB/s (`*_bytes`) and tokens per second (`*_tokens`).
+
+All benches reuse the corpora under `fixtures/cases/` and rely on the bundled dictionary copied by `build.rs` via `SYSDIC_PATH`. You can still override timing parameters with Criterion flags, e.g. `cargo bench --profile release --bench tokenize -- --measurement-time 3`.
+
+To run both the Python and pure Rust benchmarks in one go, invoke:
+
+```bash
+tox -e bench
+```
+
+`tox` now executes the existing `python -m runome.bench` measurements first, then calls the Criterion suite with default flags `--measurement-time 3 --warm-up-time 1`. Override those via `RUNOME_BENCH_RUST_CRITERION_FLAGS`, e.g. `RUNOME_BENCH_RUST_CRITERION_FLAGS="--measurement-time 6 --warm-up-time 2" tox -e bench`.
+
 ## Next Steps
 
 1. Eliminate the known-diff allowlists by fixing Runome's divergences on the long-form corpora.
