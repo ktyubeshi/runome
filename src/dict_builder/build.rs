@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use encoding_rs::Encoding;
 use log::info;
 
@@ -372,6 +373,16 @@ fn save_dictionary(
         bincode::serialize(connection_matrix).context("Failed to serialize connection matrix")?;
     fs::write(&connections_path, encoded).context("Failed to write connections file")?;
 
+    // Save packed connection matrix for zero-copy loading
+    let connections_pack_path = output_dir.join(crate::dictionary::loader::CONNECTIONS_PACK_FILE);
+    write_connections_pack(&connections_pack_path, connection_matrix)
+        .context("Failed to write connections pack file")?;
+
+    // Save packed morpheme index for zero-copy loading
+    let morpheme_pack_path = output_dir.join(crate::dictionary::loader::MORPHEME_PACK_FILE);
+    write_morpheme_index_pack(&morpheme_pack_path, morpheme_index)
+        .context("Failed to write morpheme index pack file")?;
+
     // Save character definitions
     let char_defs_path = output_dir.join("char_defs.bin");
     let encoded = bincode::serialize(char_defs).context("Failed to serialize char definitions")?;
@@ -383,5 +394,107 @@ fn save_dictionary(
     fs::write(&unknowns_path, encoded).context("Failed to write unknowns file")?;
 
     info!("Dictionary files saved to: {:?}", output_dir);
+    Ok(())
+}
+
+fn write_connections_pack(path: &Path, matrix: &ConnectionMatrix) -> Result<()> {
+    let rows = matrix.len();
+    let cols = if rows > 0 { matrix[0].len() } else { 0 };
+
+    ensure!(
+        rows <= u32::MAX as usize && cols <= u32::MAX as usize,
+        "Connection matrix dimensions exceed supported range: {}x{}",
+        rows,
+        cols
+    );
+
+    let mut file = fs::File::create(path).context("Failed to create connections pack file")?;
+    file.write_all(crate::dictionary::loader::CONNECTIONS_PACK_MAGIC)
+        .context("Failed to write connections pack magic")?;
+    file.write_all(&crate::dictionary::loader::CONNECTIONS_PACK_VERSION.to_le_bytes())
+        .context("Failed to write connections pack version")?;
+    file.write_all(&(rows as u32).to_le_bytes())
+        .context("Failed to write connections pack rows")?;
+    file.write_all(&(cols as u32).to_le_bytes())
+        .context("Failed to write connections pack cols")?;
+
+    for row in matrix {
+        ensure!(
+            row.len() == cols,
+            "Connection matrix row length mismatch: expected {}, got {}",
+            cols,
+            row.len()
+        );
+        for &cost in row {
+            file.write_all(&cost.to_le_bytes())
+                .context("Failed to write connection cost")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_morpheme_index_pack(path: &Path, index: &[Vec<u32>]) -> Result<()> {
+    let entry_count = index.len();
+
+    ensure!(
+        entry_count <= u32::MAX as usize,
+        "Morpheme index entry count exceeds supported range: {}",
+        entry_count
+    );
+
+    let mut offsets = Vec::with_capacity(entry_count + 1);
+    offsets.push(0u32);
+    let mut values = Vec::new();
+
+    for row in index {
+        ensure!(
+            row.len() <= u32::MAX as usize,
+            "Morpheme index row length exceeds supported range: {}",
+            row.len()
+        );
+        let next_offset = offsets
+            .last()
+            .copied()
+            .and_then(|prev| prev.checked_add(row.len() as u32))
+            .ok_or_else(|| anyhow::anyhow!("Morpheme index offsets overflow"))?;
+        offsets.push(next_offset);
+        values.extend(row.iter().copied());
+    }
+
+    ensure!(
+        values.len() <= u32::MAX as usize,
+        "Morpheme index value count exceeds supported range: {}",
+        values.len()
+    );
+
+    let final_offset = *offsets.last().unwrap_or(&0);
+    ensure!(
+        final_offset == values.len() as u32,
+        "Morpheme index offsets mismatch: final offset {} != value count {}",
+        final_offset,
+        values.len()
+    );
+
+    let mut file = fs::File::create(path).context("Failed to create morpheme index pack file")?;
+    file.write_all(crate::dictionary::loader::MORPHEME_PACK_MAGIC)
+        .context("Failed to write morpheme index pack magic")?;
+    file.write_all(&crate::dictionary::loader::MORPHEME_PACK_VERSION.to_le_bytes())
+        .context("Failed to write morpheme index pack version")?;
+    file.write_all(&(entry_count as u32).to_le_bytes())
+        .context("Failed to write morpheme index entry count")?;
+    file.write_all(&(values.len() as u32).to_le_bytes())
+        .context("Failed to write morpheme index value count")?;
+
+    for offset in offsets {
+        file.write_all(&offset.to_le_bytes())
+            .context("Failed to write morpheme index offset")?;
+    }
+
+    for value in values {
+        file.write_all(&value.to_le_bytes())
+            .context("Failed to write morpheme index value")?;
+    }
+
     Ok(())
 }

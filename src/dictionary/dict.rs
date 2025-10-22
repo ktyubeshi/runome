@@ -175,28 +175,6 @@ impl Matcher {
 
         outputs
     }
-
-    /// Decode FST index ID to morpheme IDs using separate morpheme index
-    ///
-    /// With the separate index approach, the FST stores simple index IDs,
-    /// and we use those to look up the actual morpheme IDs from the morpheme index.
-    ///
-    /// # Arguments
-    /// * `index_id` - The u64 index ID from FST
-    /// * `morpheme_index` - Reference to the morpheme index array
-    ///
-    /// # Returns
-    /// * `Vec<u32>` - Vector of morpheme IDs for this surface form
-    fn lookup_morpheme_ids(&self, index_id: u64, morpheme_index: &[Vec<u32>]) -> Vec<u32> {
-        // Simple lookup: FST index ID directly maps to morpheme index entry
-        if let Some(morpheme_ids) = morpheme_index.get(index_id as usize) {
-            morpheme_ids.clone()
-        } else {
-            // This should not happen if the data is consistent
-            eprintln!("Warning: Invalid morpheme index ID: {}", index_id);
-            Vec::new()
-        }
-    }
 }
 
 /// RAMDictionary implementation using DictionaryResource and Matcher
@@ -265,15 +243,15 @@ impl Dictionary for RAMDictionary {
         }
 
         // 3. Get morpheme index and dictionary entries
-        let morpheme_index = self.resource.get_morpheme_index();
+        let morpheme_index = self.resource.morpheme_index_view();
         let entries = self.resource.get_entries();
         let mut results = Vec::with_capacity(index_ids.len().saturating_mul(2));
 
         // 4. For each index ID, look up the morpheme IDs and resolve to entries
         for index_id in index_ids {
-            let morpheme_ids = self.matcher.lookup_morpheme_ids(index_id, morpheme_index);
+            let morpheme_ids = morpheme_index.get(index_id as usize);
 
-            for morpheme_id in morpheme_ids {
+            for &morpheme_id in morpheme_ids {
                 // Validate morpheme ID is within bounds
                 if let Some(entry) = entries.get(morpheme_id as usize) {
                     // Filter out entries with empty surface forms

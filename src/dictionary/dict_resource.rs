@@ -1,6 +1,9 @@
 use crate::error::RunomeError;
+use memmap2::Mmap;
+use once_cell::sync::OnceCell;
 use smallvec::SmallVec;
 use std::path::Path;
+use std::slice;
 use std::sync::Arc;
 
 use super::{loader, types::*};
@@ -69,10 +72,39 @@ impl Iterator for CategoryMaskIter {
 }
 
 #[derive(Debug, Clone)]
+enum ConnectionMatrixStorage {
+    Owned(Box<[i16]>),
+    Mmap { mmap: Arc<Mmap>, data_offset: usize },
+}
+
+#[derive(Debug, Clone)]
 struct PackedConnectionMatrix {
-    rows: u16,
-    cols: u16,
-    data: Box<[i16]>,
+    rows: u32,
+    cols: u32,
+    len: usize,
+    storage: ConnectionMatrixStorage,
+}
+
+#[derive(Debug, Clone)]
+enum MorphemeIndexStorage {
+    Owned(Vec<Vec<u32>>),
+    Packed {
+        mmap: Arc<Mmap>,
+        entry_count: usize,
+        value_count: usize,
+        offsets_offset: usize,
+        values_offset: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct MorphemeIndex {
+    storage: MorphemeIndexStorage,
+    cache: OnceCell<Arc<Vec<Vec<u32>>>>,
+}
+
+pub struct MorphemeIndexView<'a> {
+    index: &'a MorphemeIndex,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,20 +289,22 @@ impl PackedConnectionMatrix {
             return Ok(Self {
                 rows: 0,
                 cols: 0,
-                data: Vec::new().into_boxed_slice(),
+                len: 0,
+                storage: ConnectionMatrixStorage::Owned(Vec::new().into_boxed_slice()),
             });
         }
 
         let cols = rows[0].len();
         if cols == 0 {
             return Ok(Self {
-                rows: rows.len() as u16,
+                rows: rows.len() as u32,
                 cols: 0,
-                data: Vec::new().into_boxed_slice(),
+                len: 0,
+                storage: ConnectionMatrixStorage::Owned(Vec::new().into_boxed_slice()),
             });
         }
 
-        if rows.len() > u16::MAX as usize || cols > u16::MAX as usize {
+        if rows.len() > u32::MAX as usize || cols > u32::MAX as usize {
             return Err(RunomeError::DictValidationError {
                 reason: format!(
                     "Connection matrix dimensions exceed supported range: {}x{}",
@@ -296,15 +330,16 @@ impl PackedConnectionMatrix {
         }
 
         Ok(Self {
-            rows: rows.len() as u16,
-            cols: cols as u16,
-            data: data.into_boxed_slice(),
+            rows: rows.len() as u32,
+            cols: cols as u32,
+            len: data.len(),
+            storage: ConnectionMatrixStorage::Owned(data.into_boxed_slice()),
         })
     }
 
     #[inline]
     fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len == 0
     }
 
     #[inline]
@@ -324,10 +359,204 @@ impl PackedConnectionMatrix {
         let cols = self.cols();
         if left < self.rows() && right < cols {
             let idx = left * cols + right;
-            Some(self.data[idx])
+            Some(self.as_slice()[idx])
         } else {
             None
         }
+    }
+
+    fn row_slice(&self, row: usize) -> Option<&[i16]> {
+        if row >= self.rows() {
+            return None;
+        }
+        let cols = self.cols();
+        let start = row * cols;
+        let end = start + cols;
+        Some(&self.as_slice()[start..end])
+    }
+
+    fn as_slice(&self) -> &[i16] {
+        match &self.storage {
+            ConnectionMatrixStorage::Owned(data) => data,
+            ConnectionMatrixStorage::Mmap { mmap, data_offset } => {
+                let ptr = unsafe { mmap.as_ptr().add(*data_offset) as *const i16 };
+                unsafe { std::slice::from_raw_parts(ptr, self.len) }
+            }
+        }
+    }
+
+    fn from_mmap(
+        mmap: Arc<Mmap>,
+        rows: u32,
+        cols: u32,
+        data_offset: usize,
+    ) -> Result<Self, RunomeError> {
+        let len = (rows as usize).checked_mul(cols as usize).ok_or_else(|| {
+            RunomeError::DictValidationError {
+                reason: format!(
+                    "Invalid connection matrix dimensions: rows={}, cols={}",
+                    rows, cols
+                ),
+            }
+        })?;
+
+        let total_bytes = len.checked_mul(std::mem::size_of::<i16>()).ok_or_else(|| {
+            RunomeError::DictValidationError {
+                reason: "Connection matrix size overflow".to_string(),
+            }
+        })?;
+
+        let available = mmap.len().checked_sub(data_offset).ok_or_else(|| {
+            RunomeError::DictValidationError {
+                reason: "connections.pack data offset beyond file size".to_string(),
+            }
+        })?;
+
+        if available != total_bytes {
+            return Err(RunomeError::DictValidationError {
+                reason: format!(
+                    "connections.pack data size mismatch: available={} expected={}",
+                    available, total_bytes
+                ),
+            });
+        }
+
+        if data_offset % std::mem::align_of::<i16>() != 0 {
+            return Err(RunomeError::DictValidationError {
+                reason: format!(
+                    "connections.pack data offset {} is not aligned for i16",
+                    data_offset
+                ),
+            });
+        }
+
+        Ok(Self {
+            rows,
+            cols,
+            len,
+            storage: ConnectionMatrixStorage::Mmap { mmap, data_offset },
+        })
+    }
+}
+
+const EMPTY_U32_SLICE: &[u32] = &[];
+
+impl MorphemeIndexStorage {
+    fn len(&self) -> usize {
+        match self {
+            MorphemeIndexStorage::Owned(vecs) => vecs.len(),
+            MorphemeIndexStorage::Packed { entry_count, .. } => *entry_count,
+        }
+    }
+
+    fn get(&self, idx: usize) -> &[u32] {
+        match self {
+            MorphemeIndexStorage::Owned(vecs) => vecs
+                .get(idx)
+                .map(|v| v.as_slice())
+                .unwrap_or(EMPTY_U32_SLICE),
+            MorphemeIndexStorage::Packed {
+                mmap,
+                entry_count,
+                value_count,
+                offsets_offset,
+                values_offset,
+            } => {
+                if idx >= *entry_count {
+                    return EMPTY_U32_SLICE;
+                }
+
+                let offsets_ptr = unsafe { mmap.as_ptr().add(*offsets_offset) as *const u32 };
+                let offsets = unsafe { slice::from_raw_parts(offsets_ptr, entry_count + 1) };
+
+                let start = offsets[idx] as usize;
+                let end = offsets[idx + 1] as usize;
+
+                if start > end || end > *value_count {
+                    return EMPTY_U32_SLICE;
+                }
+
+                let values_ptr = unsafe { mmap.as_ptr().add(*values_offset) as *const u32 };
+                let values = unsafe { slice::from_raw_parts(values_ptr, *value_count) };
+                &values[start..end]
+            }
+        }
+    }
+
+    fn clone_to_vecs(&self) -> Vec<Vec<u32>> {
+        match self {
+            MorphemeIndexStorage::Owned(vecs) => vecs.clone(),
+            MorphemeIndexStorage::Packed { .. } => {
+                let len = self.len();
+                let mut out = Vec::with_capacity(len);
+                for idx in 0..len {
+                    out.push(self.get(idx).to_vec());
+                }
+                out
+            }
+        }
+    }
+}
+
+impl MorphemeIndex {
+    fn from_vectors(vecs: Vec<Vec<u32>>) -> Self {
+        Self {
+            storage: MorphemeIndexStorage::Owned(vecs),
+            cache: OnceCell::new(),
+        }
+    }
+
+    fn from_pack(pack: loader::MorphemeIndexPack) -> Result<Self, RunomeError> {
+        if pack.offsets_offset % std::mem::size_of::<u32>() != 0
+            || pack.values_offset % std::mem::size_of::<u32>() != 0
+        {
+            return Err(RunomeError::DictValidationError {
+                reason: "morpheme_index.pack data is not properly aligned".to_string(),
+            });
+        }
+
+        let entry_count = pack.entry_count as usize;
+        let value_count = pack.value_count as usize;
+        let mmap_arc = Arc::new(pack.mmap);
+
+        Ok(Self {
+            storage: MorphemeIndexStorage::Packed {
+                mmap: mmap_arc,
+                entry_count,
+                value_count,
+                offsets_offset: pack.offsets_offset,
+                values_offset: pack.values_offset,
+            },
+            cache: OnceCell::new(),
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    fn get(&self, idx: usize) -> &[u32] {
+        self.storage.get(idx)
+    }
+
+    fn as_vec_slice(&self) -> &[Vec<u32>] {
+        match &self.storage {
+            MorphemeIndexStorage::Owned(vecs) => vecs.as_slice(),
+            MorphemeIndexStorage::Packed { .. } => self
+                .cache
+                .get_or_init(|| Arc::new(self.storage.clone_to_vecs()))
+                .as_slice(),
+        }
+    }
+}
+
+impl<'a> MorphemeIndexView<'a> {
+    pub fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    pub fn get(&self, idx: usize) -> &'a [u32] {
+        self.index.get(idx)
     }
 }
 
@@ -335,12 +564,12 @@ impl PackedConnectionMatrix {
 pub struct DictionaryResource {
     entries: Vec<DictEntry>,
     connections: PackedConnectionMatrix,
-    connections_arc: Arc<Vec<Vec<i16>>>, // Shared reference for user dictionaries
     char_defs: CharDefinitions,
     unknowns: UnknownEntries,
-    morpheme_index: Vec<Vec<u32>>,
+    morpheme_index: MorphemeIndex,
     category_index: CategoryIndex,
     unknown_entries_by_id: Vec<Box<[UnknownEntry]>>,
+    connection_matrix_cache: OnceCell<Arc<Vec<Vec<i16>>>>,
 }
 
 impl DictionaryResource {
@@ -349,12 +578,26 @@ impl DictionaryResource {
         loader::validate_sysdic_directory(sysdic_dir)?;
 
         let entries = loader::load_entries(sysdic_dir)?;
-        let connections_rows = loader::load_connections(sysdic_dir)?;
-        let connections_arc = Arc::new(connections_rows);
-        let connections = PackedConnectionMatrix::from_rows(&connections_arc)?;
+        let connections =
+            if let Some((mmap, rows, cols)) = loader::load_connections_packed(sysdic_dir)? {
+                let mmap_arc = Arc::new(mmap);
+                PackedConnectionMatrix::from_mmap(
+                    mmap_arc,
+                    rows,
+                    cols,
+                    loader::CONNECTIONS_PACK_HEADER_SIZE,
+                )?
+            } else {
+                let connections_rows = loader::load_connections(sysdic_dir)?;
+                PackedConnectionMatrix::from_rows(&connections_rows)?
+            };
         let char_defs = loader::load_char_definitions(sysdic_dir)?;
         let unknowns = loader::load_unknown_entries(sysdic_dir)?;
-        let morpheme_index = loader::load_morpheme_index(sysdic_dir)?;
+        let morpheme_index = if let Some(pack) = loader::load_morpheme_index_packed(sysdic_dir)? {
+            MorphemeIndex::from_pack(pack)?
+        } else {
+            MorphemeIndex::from_vectors(loader::load_morpheme_index(sysdic_dir)?)
+        };
         let category_index = CategoryIndex::new(&char_defs)?;
 
         let mut unknown_entries_by_id = Vec::with_capacity(category_index.len());
@@ -368,12 +611,12 @@ impl DictionaryResource {
         Ok(Self {
             entries,
             connections,
-            connections_arc,
             char_defs,
             unknowns,
             morpheme_index,
             category_index,
             unknown_entries_by_id,
+            connection_matrix_cache: OnceCell::new(),
         })
     }
 
@@ -465,15 +708,21 @@ impl DictionaryResource {
             .ok_or(RunomeError::InvalidConnectionId { left_id, right_id })
     }
 
-    /// Get connection matrix for user dictionary use
+    /// Get connection matrix for user dictionary use.
     ///
-    /// Returns a reference to the connection matrix used by this dictionary.
-    /// This is needed for UserDictionary initialization.
-    ///
-    /// # Returns
-    /// * `Arc<Vec<Vec<i16>>>` - Shared reference to connection matrix
+    /// Materializes the full Vec<Vec<i16>> representation on first access and
+    /// caches it for subsequent calls.
     pub fn get_connection_matrix(&self) -> Arc<Vec<Vec<i16>>> {
-        Arc::clone(&self.connections_arc)
+        self.connection_matrix_cache
+            .get_or_init(|| {
+                let mut matrix = Vec::with_capacity(self.connections.rows());
+                for row_index in 0..self.connections.rows() {
+                    let row_slice = self.connections.row_slice(row_index).unwrap_or(&[]);
+                    matrix.push(row_slice.to_vec());
+                }
+                Arc::new(matrix)
+            })
+            .clone()
     }
 
     /// Get character category for a given character (returns first match)
@@ -565,7 +814,13 @@ impl DictionaryResource {
 
     /// Get morpheme index for mapping FST index IDs to vectors of morpheme IDs
     pub fn get_morpheme_index(&self) -> &[Vec<u32>] {
-        &self.morpheme_index
+        self.morpheme_index.as_vec_slice()
+    }
+
+    pub fn morpheme_index_view(&self) -> MorphemeIndexView<'_> {
+        MorphemeIndexView {
+            index: &self.morpheme_index,
+        }
     }
 
     /// Check if unknown word processing should always be invoked for category
@@ -1024,7 +1279,8 @@ mod tests {
 
         // Verify connection matrix is square
         let rows = dict.connections.rows();
-        for (i, row) in dict.connections_arc.iter().enumerate() {
+        let matrix_vec = dict.get_connection_matrix();
+        for (i, row) in matrix_vec.iter().enumerate() {
             assert_eq!(
                 row.len(),
                 dict.connections.cols(),
