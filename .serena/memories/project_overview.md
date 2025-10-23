@@ -1,0 +1,4 @@
+- Purpose: Rust-based Japanese morphological analyzer aiming for full Janome compatibility, exposed to Python via PyO3 bindings.
+- Tech stack: Rust 2024 crate (`runome`) with optional `python` feature for PyO3, Python package built with maturin/uv, bundled IPADIC dictionary under `runome/sysdic` copied by `build.rs`.
+- Key structure: `src/` Rust implementation (tokenizer, analyzer, lattice, dictionary, bindings), `runome/` CPython bindings and stubs, `tests/` pytest cases plus dictionary fixtures, `examples/` usage samples, `planning/` and `tmp/` for roadmap docs.
+- Notable integrations: build script copies `sysdic`, expects bundled dictionary when building/tests; README stresses Janome compatibility and experimental status.

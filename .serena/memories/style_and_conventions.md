@@ -1,0 +1,3 @@
+- Rust: idiomatic 2024 edition, public APIs documented with `///` doc comments; keep token formatting exactly matching Janome (`surface\t...`); avoid panics—propagate errors via `RunomeError`/`Result`. Interning via `intern` module is deliberate—reuse helpers rather than new allocation.
+- Python: lightweight re-export layer over extension module; modules begin with module-level docstrings; `__all__` used to expose Token/Tokenizer. Keep ASCII comments/strings unless Japanese text examples are necessary.
+- Tests: existing pytest tests mimic Janome's suite; new tests should be deterministic, explicit about expected strings, and avoid heavy fixtures by default.

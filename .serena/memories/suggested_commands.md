@@ -1,0 +1,6 @@
+- Setup Python deps: `uv sync`
+- Build Rust crate: `cargo build`
+- Run Rust tests: `cargo test`
+- Run Python tests: `uv run python -m pytest tests`
+- Build Python wheel: `uv run maturin build --release --features python`
+- Optional dev install: `uv run maturin develop --features python`

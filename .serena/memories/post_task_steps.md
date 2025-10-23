@@ -1,0 +1,3 @@
+- Run `cargo test` and ensure all Rust unit/integration tests pass.
+- Run `uv run python -m pytest tests` to confirm Python bindings stay compatible with Janome behavior.
+- When touching packaging/bindings, optionally `uv run maturin develop --features python` to rebuild the extension before manual verification.
