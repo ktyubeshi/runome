@@ -39,7 +39,7 @@ fn utf8_char_width(first_byte: u8) -> usize {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeType {
     SysDict,
     UserDict,
@@ -206,7 +206,7 @@ impl<'a> LatticeNode for Node<'a> {
     }
 
     fn node_type(&self) -> NodeType {
-        self.node_type.clone()
+        self.node_type
     }
 
     fn surface_len(&self) -> usize {
@@ -433,7 +433,7 @@ impl LatticeNode for UnknownNode {
     }
 
     fn node_type(&self) -> NodeType {
-        self.node_type.clone()
+        self.node_type
     }
 
     fn surface_len(&self) -> usize {

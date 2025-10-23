@@ -128,7 +128,7 @@ impl Token {
     }
 
     pub fn node_type(&self) -> NodeType {
-        self.node_type.clone()
+        self.node_type
     }
 }
 
@@ -296,7 +296,7 @@ impl Tokenizer {
                 continue;
             }
 
-            let start_node = StartNode::Dict(Node::new(entry, node_type.clone()));
+            let start_node = StartNode::Dict(Node::new(entry, node_type));
             lattice.add(start_node)?;
             emitted = true;
         }
