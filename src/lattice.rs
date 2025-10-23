@@ -8,7 +8,7 @@ use crate::intern;
 
 const DEFAULT_COST_CACHE_SIZE: usize = 16_384;
 
-#[inline]
+#[inline(always)]
 fn fast_surface_len(surface: &str) -> usize {
     let bytes = surface.as_bytes();
     match bytes.iter().position(|b| *b >= 0x80) {
@@ -27,7 +27,7 @@ fn fast_surface_len(surface: &str) -> usize {
     }
 }
 
-#[inline]
+#[inline(always)]
 fn utf8_char_width(first_byte: u8) -> usize {
     let leading = first_byte.leading_ones() as usize;
     match leading {
@@ -37,6 +37,12 @@ fn utf8_char_width(first_byte: u8) -> usize {
         4 => 4,
         _ => 1,
     }
+}
+
+#[inline(always)]
+fn compute_surface_len(surface: &str) -> usize {
+    let len = fast_surface_len(surface);
+    if len == 0 { 1 } else { len }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +125,7 @@ pub struct Node<'a> {
     /// Reference to dictionary entry (avoids copying morphological data)
     dict_entry: &'a DictEntry,
     node_type: NodeType,
+    surface_len: usize,
 
     /// Viterbi algorithm fields
     min_cost: i32,
@@ -131,9 +138,11 @@ pub struct Node<'a> {
 impl<'a> Node<'a> {
     /// Create a new Node from a dictionary entry reference
     pub fn new(dict_entry: &'a DictEntry, node_type: NodeType) -> Self {
+        let surface_len = compute_surface_len(&dict_entry.surface);
         Self {
             dict_entry,
             node_type,
+            surface_len,
             min_cost: i32::MAX,
             back_pos: -1,
             back_index: -1,
@@ -210,7 +219,7 @@ impl<'a> LatticeNode for Node<'a> {
     }
 
     fn surface_len(&self) -> usize {
-        fast_surface_len(&self.dict_entry.surface)
+        self.surface_len
     }
 
     fn morph_id(&self) -> Option<usize> {
@@ -247,6 +256,7 @@ impl<'a> LatticeNode for Node<'a> {
 pub struct UnknownNode {
     /// Morphological data (owned since it's constructed dynamically)
     surface: String,
+    surface_len: usize,
     left_id: u16,
     right_id: u16,
     cost: i16,
@@ -282,8 +292,10 @@ impl UnknownNode {
         phonetic: String,
         node_type: NodeType,
     ) -> Self {
+        let surface_len = compute_surface_len(&surface);
         Self {
             surface,
+            surface_len,
             left_id,
             right_id,
             cost,
@@ -318,8 +330,10 @@ impl UnknownNode {
         phonetic: &str,
         node_type: NodeType,
     ) -> Self {
+        let surface_len = compute_surface_len(surface);
         Self {
             surface: intern::intern_or_clone(surface),
+            surface_len,
             left_id,
             right_id,
             cost,
@@ -354,8 +368,11 @@ impl UnknownNode {
             None => intern::ASTERISK.to_string(),
         };
 
+        let surface_len = compute_surface_len(&surface);
+
         Self {
             surface,
+            surface_len,
             left_id,
             right_id,
             cost,
@@ -437,7 +454,7 @@ impl LatticeNode for UnknownNode {
     }
 
     fn surface_len(&self) -> usize {
-        fast_surface_len(&self.surface)
+        self.surface_len
     }
 
     fn morph_id(&self) -> Option<usize> {

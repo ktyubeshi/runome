@@ -61,8 +61,8 @@ fn bench_dictionary_load(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("dictionary_load");
     group
-        .warm_up_time(Duration::from_millis(300))
-        .measurement_time(Duration::from_secs(1))
+        .warm_up_time(Duration::from_millis(400))
+        .measurement_time(Duration::from_secs(2))
         .sample_size(10);
 
     group.bench_function("SystemDictionary::new", |b| {
