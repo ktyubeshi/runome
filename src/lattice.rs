@@ -314,44 +314,6 @@ impl UnknownNode {
         }
     }
 
-    /// Create an UnknownNode optimized for dictionary entries
-    /// Uses string interning to reduce allocations for morphological data
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_dict_entry(
-        surface: &str,
-        left_id: u16,
-        right_id: u16,
-        cost: i16,
-        part_of_speech: &str,
-        inflection_type: &str,
-        inflection_form: &str,
-        base_form: &str,
-        reading: &str,
-        phonetic: &str,
-        node_type: NodeType,
-    ) -> Self {
-        let surface_len = compute_surface_len(surface);
-        Self {
-            surface: intern::intern_or_clone(surface),
-            surface_len,
-            left_id,
-            right_id,
-            cost,
-            part_of_speech: intern::intern_or_clone(part_of_speech),
-            inflection_type: intern::intern_or_clone(inflection_type),
-            inflection_form: intern::intern_or_clone(inflection_form),
-            base_form: intern::intern_or_clone(base_form),
-            reading: intern::intern_or_clone(reading),
-            phonetic: intern::intern_or_clone(phonetic),
-            node_type,
-            min_cost: i32::MAX,
-            back_pos: -1,
-            back_index: -1,
-            pos: 0,
-            index: 0,
-        }
-    }
-
     /// Create an UnknownNode for true unknown words with default morphological values
     /// This is highly optimized for the common case where most fields are "*"
     pub fn for_unknown_word(
