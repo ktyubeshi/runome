@@ -1,4 +1,4 @@
-use crate::dictionary::types::{CharDefinitions, ConnectionMatrix, DictEntry, UnknownEntries};
+use crate::dictionary::types::{CharDefinitions, ConnectionMatrixRows, DictEntry, UnknownEntries};
 use crate::error::RunomeError;
 use memmap2::{Mmap, MmapOptions};
 use std::fs::{self, File};
@@ -34,7 +34,7 @@ pub fn load_entries(sysdic_dir: &Path) -> Result<Vec<DictEntry>, RunomeError> {
 }
 
 /// Load connection matrix from sysdic directory
-pub fn load_connections(sysdic_dir: &Path) -> Result<ConnectionMatrix, RunomeError> {
+pub fn load_connections(sysdic_dir: &Path) -> Result<ConnectionMatrixRows, RunomeError> {
     let file_path = validate_file_exists(sysdic_dir, "connections.bin")?;
     let data = fs::read(&file_path)?;
 

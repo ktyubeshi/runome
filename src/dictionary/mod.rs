@@ -9,7 +9,7 @@ pub mod user_dict;
 
 pub use dict::{Dictionary, Matcher, RAMDictionary};
 pub(crate) use dict_resource::CategoryMask;
-pub use dict_resource::DictionaryResource;
+pub use dict_resource::{ConnectionMatrix, DictionaryResource};
 pub use system_dict::SystemDictionary;
 pub use types::*;
 pub use user_dict::{UserDictFormat, UserDictionary};

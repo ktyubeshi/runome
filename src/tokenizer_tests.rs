@@ -672,7 +672,7 @@ pub mod segmentation_tests {
         let user_dict = UserDictionary::new(
             temp_file.path(),
             UserDictFormat::Ipadic,
-            sys_dict.get_connection_matrix(),
+            sys_dict.connection_matrix(),
         )
         .unwrap();
 
@@ -806,7 +806,7 @@ pub mod segmentation_tests {
         let user_dict = UserDictionary::new(
             temp_file.path(),
             UserDictFormat::Simpledic,
-            sys_dict.get_connection_matrix(),
+            sys_dict.connection_matrix(),
         )
         .unwrap();
 
@@ -943,7 +943,7 @@ pub mod segmentation_tests {
         let user_dict = UserDictionary::new(
             temp_file.path(),
             UserDictFormat::Ipadic,
-            sys_dict.get_connection_matrix(),
+            sys_dict.connection_matrix(),
         )
         .unwrap();
 

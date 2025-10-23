@@ -9,7 +9,7 @@ use log::info;
 
 use super::DictionaryBuilder;
 use crate::dictionary::types::{
-    CharCategory, CharDefinitions, CodePointRange, ConnectionMatrix, DictEntry, UnknownEntries,
+    CharCategory, CharDefinitions, CodePointRange, ConnectionMatrixRows, DictEntry, UnknownEntries,
     UnknownEntry,
 };
 
@@ -169,7 +169,7 @@ fn build_fst(entries: &[DictEntry]) -> Result<(Vec<u8>, Vec<Vec<u32>>)> {
     Ok((fst_bytes, morpheme_index))
 }
 
-fn parse_matrix_def(mecab_dir: &Path, encoding: &str) -> Result<ConnectionMatrix> {
+fn parse_matrix_def(mecab_dir: &Path, encoding: &str) -> Result<ConnectionMatrixRows> {
     let matrix_file = mecab_dir.join("matrix.def");
     let encoding = Encoding::for_label(encoding.as_bytes()).context("Unknown encoding")?;
 
@@ -348,7 +348,7 @@ fn save_dictionary(
     fst_data: &[u8],
     morpheme_index: &[Vec<u32>],
     entries: &[DictEntry],
-    connection_matrix: &ConnectionMatrix,
+    connection_matrix: &ConnectionMatrixRows,
     char_defs: &CharDefinitions,
     unknowns: &UnknownEntries,
 ) -> Result<()> {
@@ -397,7 +397,7 @@ fn save_dictionary(
     Ok(())
 }
 
-fn write_connections_pack(path: &Path, matrix: &ConnectionMatrix) -> Result<()> {
+fn write_connections_pack(path: &Path, matrix: &ConnectionMatrixRows) -> Result<()> {
     let rows = matrix.len();
     let cols = if rows > 0 { matrix[0].len() } else { 0 };
 

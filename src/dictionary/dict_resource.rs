@@ -1,6 +1,5 @@
 use crate::error::RunomeError;
 use memmap2::Mmap;
-use once_cell::sync::OnceCell;
 use smallvec::SmallVec;
 use std::path::Path;
 use std::slice;
@@ -73,7 +72,7 @@ impl Iterator for CategoryMaskIter {
 
 #[derive(Debug, Clone)]
 enum ConnectionMatrixStorage {
-    Owned(Box<[i16]>),
+    Owned(Arc<[i16]>),
     Mmap { mmap: Arc<Mmap>, data_offset: usize },
 }
 
@@ -107,6 +106,15 @@ struct MorphemeIndex {
 
 pub struct MorphemeIndexView<'a> {
     index: &'a MorphemeIndex,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConnectionMatrix {
+    inner: Arc<PackedConnectionMatrix>,
+}
+
+pub struct ConnectionMatrixView<'a> {
+    matrix: &'a PackedConnectionMatrix,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -292,7 +300,9 @@ impl PackedConnectionMatrix {
                 rows: 0,
                 cols: 0,
                 len: 0,
-                storage: ConnectionMatrixStorage::Owned(Vec::new().into_boxed_slice()),
+                storage: ConnectionMatrixStorage::Owned(Arc::from(
+                    Vec::<i16>::new().into_boxed_slice(),
+                )),
             });
         }
 
@@ -302,7 +312,9 @@ impl PackedConnectionMatrix {
                 rows: rows.len() as u32,
                 cols: 0,
                 len: 0,
-                storage: ConnectionMatrixStorage::Owned(Vec::new().into_boxed_slice()),
+                storage: ConnectionMatrixStorage::Owned(Arc::from(
+                    Vec::<i16>::new().into_boxed_slice(),
+                )),
             });
         }
 
@@ -331,11 +343,13 @@ impl PackedConnectionMatrix {
             data.extend_from_slice(row);
         }
 
+        let data_arc: Arc<[i16]> = Arc::from(data.into_boxed_slice());
+
         Ok(Self {
             rows: rows.len() as u32,
             cols: cols as u32,
-            len: data.len(),
-            storage: ConnectionMatrixStorage::Owned(data.into_boxed_slice()),
+            len: data_arc.len(),
+            storage: ConnectionMatrixStorage::Owned(data_arc),
         })
     }
 
@@ -557,6 +571,63 @@ impl<'a> MorphemeIndexView<'a> {
     }
 }
 
+impl ConnectionMatrix {
+    fn from_packed(matrix: &PackedConnectionMatrix) -> Self {
+        Self {
+            inner: Arc::new(matrix.clone()),
+        }
+    }
+
+    pub fn from_rows(rows: &[Vec<i16>]) -> Result<Self, RunomeError> {
+        let packed = PackedConnectionMatrix::from_rows(rows)?;
+        Ok(Self {
+            inner: Arc::new(packed),
+        })
+    }
+
+    #[inline]
+    pub fn rows(&self) -> usize {
+        self.inner.rows()
+    }
+
+    #[inline]
+    pub fn cols(&self) -> usize {
+        self.inner.cols()
+    }
+
+    #[inline]
+    pub fn get(&self, left_id: u16, right_id: u16) -> Option<i16> {
+        self.inner.get(left_id, right_id)
+    }
+
+    #[inline]
+    pub fn row(&self, row: usize) -> Option<&[i16]> {
+        self.inner.row_slice(row)
+    }
+}
+
+impl<'a> ConnectionMatrixView<'a> {
+    #[inline]
+    pub fn rows(&self) -> usize {
+        self.matrix.rows()
+    }
+
+    #[inline]
+    pub fn cols(&self) -> usize {
+        self.matrix.cols()
+    }
+
+    #[inline]
+    pub fn get(&self, left_id: u16, right_id: u16) -> Option<i16> {
+        self.matrix.get(left_id, right_id)
+    }
+
+    #[inline]
+    pub fn row(&self, row: usize) -> Option<&'a [i16]> {
+        self.matrix.row_slice(row)
+    }
+}
+
 /// Container for all dictionary resources
 pub struct DictionaryResource {
     entries: Vec<DictEntry>,
@@ -566,7 +637,6 @@ pub struct DictionaryResource {
     morpheme_index: MorphemeIndex,
     category_index: CategoryIndex,
     unknown_entries_by_id: Vec<Box<[UnknownEntry]>>,
-    connection_matrix_cache: OnceCell<Arc<Vec<Vec<i16>>>>,
 }
 
 impl DictionaryResource {
@@ -613,7 +683,6 @@ impl DictionaryResource {
             morpheme_index,
             category_index,
             unknown_entries_by_id,
-            connection_matrix_cache: OnceCell::new(),
         })
     }
 
@@ -707,19 +776,16 @@ impl DictionaryResource {
 
     /// Get connection matrix for user dictionary use.
     ///
-    /// Materializes the full Vec<Vec<i16>> representation on first access and
-    /// caches it for subsequent calls.
-    pub fn get_connection_matrix(&self) -> Arc<Vec<Vec<i16>>> {
-        self.connection_matrix_cache
-            .get_or_init(|| {
-                let mut matrix = Vec::with_capacity(self.connections.rows());
-                for row_index in 0..self.connections.rows() {
-                    let row_slice = self.connections.row_slice(row_index).unwrap_or(&[]);
-                    matrix.push(row_slice.to_vec());
-                }
-                Arc::new(matrix)
-            })
-            .clone()
+    /// Returns a shared handle that allows zero-copy access to connection costs.
+    pub fn connection_matrix(&self) -> ConnectionMatrix {
+        ConnectionMatrix::from_packed(&self.connections)
+    }
+
+    /// Borrowed view of the connection matrix for lightweight read-only access.
+    pub fn connection_matrix_view(&self) -> ConnectionMatrixView<'_> {
+        ConnectionMatrixView {
+            matrix: &self.connections,
+        }
     }
 
     /// Get character category for a given character (returns first match)
@@ -1278,19 +1344,25 @@ mod tests {
         let dict = DictionaryResource::load(&sysdic_path).expect("Failed to load dictionary");
 
         // Verify connection matrix is square
-        let rows = dict.connections.rows();
-        let matrix_vec = dict.get_connection_matrix();
-        for (i, row) in matrix_vec.iter().enumerate() {
+        let matrix_view = dict.connection_matrix_view();
+        for row_index in 0..matrix_view.rows() {
+            let row = matrix_view
+                .row(row_index)
+                .expect("Connection matrix row missing");
             assert_eq!(
                 row.len(),
-                dict.connections.cols(),
+                matrix_view.cols(),
                 "Connection matrix row {} has inconsistent length",
-                i
+                row_index
             );
         }
 
         // Verify all entries have valid connection IDs
-        let max_id = (rows - 1) as u16;
+        let max_id = if matrix_view.rows() > 0 {
+            (matrix_view.rows() - 1) as u16
+        } else {
+            0
+        };
         for (i, entry) in dict.entries.iter().enumerate() {
             assert!(
                 entry.left_id <= max_id,

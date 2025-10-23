@@ -44,5 +44,5 @@ pub struct UnknownEntry {
     pub part_of_speech: String,
 }
 
-pub type ConnectionMatrix = Vec<Vec<i16>>;
+pub type ConnectionMatrixRows = Vec<Vec<i16>>;
 pub type UnknownEntries = std::collections::HashMap<String, Vec<UnknownEntry>>;

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{CategoryMask, Dictionary, DictionaryResource, RAMDictionary};
+use super::{CategoryMask, ConnectionMatrix, Dictionary, DictionaryResource, RAMDictionary};
 use crate::dictionary::types::{DictEntry, UnknownEntry};
 use crate::error::RunomeError;
 
@@ -178,9 +178,9 @@ impl SystemDictionary {
     /// This is needed for UserDictionary initialization.
     ///
     /// # Returns
-    /// * `Arc<Vec<Vec<i16>>>` - Shared reference to connection matrix
-    pub fn get_connection_matrix(&self) -> Arc<Vec<Vec<i16>>> {
-        self.ram_dict.get_connection_matrix()
+    /// * `ConnectionMatrix` - Shared reference to connection matrix
+    pub fn connection_matrix(&self) -> ConnectionMatrix {
+        self.ram_dict.connection_matrix()
     }
 
     /// Get character categories for a given character

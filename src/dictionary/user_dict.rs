@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 
-use crate::dictionary::{DictEntry, Dictionary, Matcher};
+use crate::dictionary::{ConnectionMatrix, DictEntry, Dictionary, Matcher};
 use crate::error::RunomeError;
 
 /// User dictionary format types
@@ -20,10 +19,10 @@ pub enum UserDictFormat {
 /// building FST for efficient lookup, and integrating with the tokenizer.
 /// Uses the same pattern as system dictionary for handling multiple morpheme IDs.
 pub struct UserDictionary {
-    entries: Vec<DictEntry>,         // All user dictionary entries
-    morpheme_index: Vec<Vec<u32>>,   // Maps FST index IDs to morpheme ID vectors
-    matcher: Matcher,                // FST matcher for surface form lookup
-    connections: Arc<Vec<Vec<i16>>>, // Reference to system dictionary connections
+    entries: Vec<DictEntry>,       // All user dictionary entries
+    morpheme_index: Vec<Vec<u32>>, // Maps FST index IDs to morpheme ID vectors
+    matcher: Matcher,              // FST matcher for surface form lookup
+    connections: ConnectionMatrix,
 }
 
 impl UserDictionary {
@@ -40,7 +39,7 @@ impl UserDictionary {
     pub fn new(
         csv_path: &Path,
         format: UserDictFormat,
-        connections: Arc<Vec<Vec<i16>>>,
+        connections: ConnectionMatrix,
     ) -> Result<Self, RunomeError> {
         let entries = Self::load_entries(csv_path, format)?;
         let (matcher, morpheme_index) = Self::build_fst(&entries)?;
@@ -68,7 +67,7 @@ impl UserDictionary {
         csv_path: &Path,
         format: UserDictFormat,
         encoding: &'static encoding_rs::Encoding,
-        connections: Arc<Vec<Vec<i16>>>,
+        connections: ConnectionMatrix,
     ) -> Result<Self, RunomeError> {
         let entries = Self::load_entries_with_encoding(csv_path, format, encoding)?;
         let (matcher, morpheme_index) = Self::build_fst(&entries)?;
@@ -323,15 +322,9 @@ impl Dictionary for UserDictionary {
 
     fn get_trans_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError> {
         // Delegate to system dictionary connections
-        if let Some(row) = self.connections.get(left_id as usize) {
-            if let Some(cost) = row.get(right_id as usize) {
-                Ok(*cost)
-            } else {
-                Err(RunomeError::InvalidConnectionId { left_id, right_id })
-            }
-        } else {
-            Err(RunomeError::InvalidConnectionId { left_id, right_id })
-        }
+        self.connections
+            .get(left_id, right_id)
+            .ok_or(RunomeError::InvalidConnectionId { left_id, right_id })
     }
 }
 

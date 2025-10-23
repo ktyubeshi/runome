@@ -196,7 +196,7 @@ impl PyTokenizer {
                     .map_err(|e| {
                         PyException::new_err(format!("Failed to load system dictionary: {:?}", e))
                     })?
-                    .get_connection_matrix();
+                    .connection_matrix();
 
                 crate::dictionary::user_dict::UserDictionary::new_with_encoding(
                     Path::new(udic),

@@ -1,8 +1,7 @@
 use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
 
-use crate::dictionary::{DictEntry, UserDictFormat, UserDictionary};
+use crate::dictionary::{ConnectionMatrix, DictEntry, UserDictFormat, UserDictionary};
 use crate::error::RunomeError;
 
 /// Helper function to create a temporary CSV file with given content
@@ -15,9 +14,10 @@ fn create_temp_csv(content: &str) -> tempfile::NamedTempFile {
 }
 
 /// Helper function to create mock connection matrix
-fn create_mock_connections() -> Arc<Vec<Vec<i16>>> {
+fn create_mock_connections() -> ConnectionMatrix {
     // Create a simple 3x3 connection matrix for testing
-    Arc::new(vec![vec![0, 1, 2], vec![1, 0, 3], vec![2, 3, 0]])
+    ConnectionMatrix::from_rows(&[vec![0, 1, 2], vec![1, 0, 3], vec![2, 3, 0]])
+        .expect("Failed to build mock connection matrix")
 }
 
 #[cfg(test)]

@@ -3,9 +3,8 @@ use fst::raw::{Fst, Output};
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
-use std::sync::Arc;
 
-use super::{DictionaryResource, loader, types::DictEntry};
+use super::{ConnectionMatrix, DictionaryResource, loader, types::DictEntry};
 use crate::error::RunomeError;
 
 /// Dictionary trait providing core morpheme lookup functionality
@@ -221,9 +220,9 @@ impl RAMDictionary {
     /// This is needed for UserDictionary initialization.
     ///
     /// # Returns
-    /// * `Arc<Vec<Vec<i16>>>` - Shared reference to connection matrix
-    pub fn get_connection_matrix(&self) -> Arc<Vec<Vec<i16>>> {
-        self.resource.get_connection_matrix()
+    /// * `ConnectionMatrix` - Shared reference to connection matrix
+    pub fn connection_matrix(&self) -> ConnectionMatrix {
+        self.resource.connection_matrix()
     }
 }
 
