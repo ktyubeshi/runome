@@ -7,8 +7,6 @@ use crate::error::RunomeError;
 use crate::intern;
 
 const DEFAULT_COST_CACHE_SIZE: usize = 16_384;
-const SURFACE_LEN_CACHE_INITIAL_CAPACITY: usize = 1_024;
-const SURFACE_LEN_CACHE_LIMIT: usize = 8_192;
 
 #[inline]
 fn fast_surface_len(surface: &str) -> usize {
@@ -955,8 +953,6 @@ pub struct Lattice<'a> {
     dic: Arc<dyn Dictionary>,
     /// High-performance connection cost cache for hot path optimization
     cost_cache: ConnectionCostCache,
-    /// Surface length cache to avoid UTF-8 character counting
-    surface_len_cache: HashMap<String, usize, FastHasher>,
 }
 
 impl<'a> Lattice<'a> {
@@ -998,10 +994,6 @@ impl<'a> Lattice<'a> {
             p: 1, // Start at position 1 (after BOS)
             dic,
             cost_cache: ConnectionCostCache::new(DEFAULT_COST_CACHE_SIZE),
-            surface_len_cache: HashMap::with_capacity_and_hasher(
-                SURFACE_LEN_CACHE_INITIAL_CAPACITY,
-                FastHasher::default(),
-            ),
         }
     }
 
@@ -1045,27 +1037,6 @@ impl<'a> Lattice<'a> {
     /// Get reference to end nodes at the specified position  
     pub fn end_nodes(&self, pos: usize) -> Option<&Vec<CompactEndNode>> {
         self.enodes.get(pos)
-    }
-
-    /// Get cached surface length or compute and cache it
-    fn get_surface_length(&mut self, surface: &str) -> usize {
-        if surface.is_empty() {
-            return 1;
-        }
-
-        if let Some(&cached_len) = self.surface_len_cache.get(surface) {
-            return cached_len;
-        }
-
-        let len = fast_surface_len(surface);
-
-        // Cache for future use (limit cache size to prevent memory bloat)
-        if self.surface_len_cache.len() < SURFACE_LEN_CACHE_LIMIT {
-            self.surface_len_cache
-                .insert(intern::intern_or_clone(surface), len);
-        }
-
-        len
     }
 
     /// Check if the lattice is properly initialized
@@ -1119,7 +1090,6 @@ impl<'a> Lattice<'a> {
     /// Ultra-optimized add method with multiple performance optimizations:
     /// - Inlined critical data (no indirection)
     /// - Connection cost caching
-    /// - Surface length caching
     /// - Hot path specialization for single predecessor
     /// - Optimized memory access patterns
     pub fn add(&mut self, mut node: StartNode<'a>) -> Result<(), RunomeError> {
@@ -1218,8 +1188,8 @@ impl<'a> Lattice<'a> {
         let node_index = self.snodes.get(self.p).map_or(0, |nodes| nodes.len());
         node.set_index(node_index);
 
-        // Ultra-optimized surface length calculation with caching
-        let surface_len = self.get_surface_length(node.surface());
+        // Use node-provided surface length for zero-copy dictionary nodes
+        let surface_len = node.surface_len();
         let end_pos = self.p + surface_len;
 
         // Optimized lattice expansion

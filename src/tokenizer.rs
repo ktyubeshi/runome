@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::dictionary::{CategoryMask, DictEntry, Dictionary, SystemDictionary, UserDictionary};
 use crate::error::RunomeError;
 use crate::intern;
-use crate::lattice::{Lattice, LatticeNode, NodeType, StartNode};
+use crate::lattice::{Lattice, LatticeNode, Node, NodeType, StartNode};
 
 /// Constants matching Python Janome tokenizer
 const MAX_CHUNK_SIZE: usize = 1024;
@@ -283,9 +283,9 @@ impl Tokenizer {
         if len == 0 { None } else { Some(len) }
     }
 
-    fn emit_dictionary_entries(
-        lattice: &mut Lattice<'_>,
-        entries: &[&DictEntry],
+    fn emit_dictionary_entries<'a>(
+        lattice: &mut Lattice<'a>,
+        entries: &[&'a DictEntry],
         node_type: NodeType,
         max_char_len: usize,
     ) -> Result<bool, RunomeError> {
@@ -296,19 +296,7 @@ impl Tokenizer {
                 continue;
             }
 
-            let start_node = StartNode::Unknown(crate::lattice::UnknownNode::from_dict_entry(
-                &entry.surface,
-                entry.left_id,
-                entry.right_id,
-                entry.cost,
-                &entry.part_of_speech,
-                &entry.inflection_type,
-                &entry.inflection_form,
-                &entry.base_form,
-                &entry.reading,
-                &entry.phonetic,
-                node_type.clone(),
-            ));
+            let start_node = StartNode::Dict(Node::new(entry, node_type.clone()));
             lattice.add(start_node)?;
             emitted = true;
         }
@@ -475,7 +463,7 @@ impl Tokenizer {
     /// Add dictionary entries to the lattice following Python's incremental approach
     /// This matches Python Janome's tokenize() method exactly
     fn add_dictionary_entries<'a>(
-        &self,
+        &'a self,
         lattice: &mut Lattice<'a>,
         chunk: &ChunkCharView<'_>,
         baseform_unk: bool,
