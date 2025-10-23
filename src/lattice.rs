@@ -1,10 +1,45 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use crate::dictionary::{DictEntry, Dictionary};
 use crate::error::RunomeError;
 use crate::intern;
+
+const DEFAULT_COST_CACHE_SIZE: usize = 16_384;
+const SURFACE_LEN_CACHE_INITIAL_CAPACITY: usize = 1_024;
+const SURFACE_LEN_CACHE_LIMIT: usize = 8_192;
+
+#[inline]
+fn fast_surface_len(surface: &str) -> usize {
+    let bytes = surface.as_bytes();
+    match bytes.iter().position(|b| *b >= 0x80) {
+        None => bytes.len(),
+        Some(first_non_ascii) => {
+            let mut count = first_non_ascii;
+            let mut idx = first_non_ascii;
+            while idx < bytes.len() {
+                let byte = bytes[idx];
+                let advance = utf8_char_width(byte);
+                idx += advance;
+                count += 1;
+            }
+            count
+        }
+    }
+}
+
+#[inline]
+fn utf8_char_width(first_byte: u8) -> usize {
+    let leading = first_byte.leading_ones() as usize;
+    match leading {
+        0 | 1 => 1,
+        2 => 2,
+        3 => 3,
+        4 => 4,
+        _ => 1,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeType {
@@ -177,7 +212,7 @@ impl<'a> LatticeNode for Node<'a> {
     }
 
     fn surface_len(&self) -> usize {
-        self.dict_entry.surface.chars().count()
+        fast_surface_len(&self.dict_entry.surface)
     }
 
     fn morph_id(&self) -> Option<usize> {
@@ -404,7 +439,7 @@ impl LatticeNode for UnknownNode {
     }
 
     fn surface_len(&self) -> usize {
-        self.surface.chars().count()
+        fast_surface_len(&self.surface)
     }
 
     fn morph_id(&self) -> Option<usize> {
@@ -850,13 +885,28 @@ type FastHasher = BuildHasherDefault<fxhash::FxHasher>;
 /// Connection cost cache for frequently accessed cost lookups
 struct ConnectionCostCache {
     cache: HashMap<CostCacheKey, i16, FastHasher>,
+    order: VecDeque<CostCacheKey>,
     max_size: usize,
 }
 
 impl ConnectionCostCache {
     fn new(max_size: usize) -> Self {
+        if max_size == 0 {
+            return Self {
+                cache: HashMap::with_hasher(FastHasher::default()),
+                order: VecDeque::new(),
+                max_size,
+            };
+        }
+
+        let capacity = max_size
+            .checked_next_power_of_two()
+            .unwrap_or(max_size)
+            .min(65_536);
+
         Self {
-            cache: HashMap::with_hasher(FastHasher::default()),
+            cache: HashMap::with_capacity_and_hasher(capacity, FastHasher::default()),
+            order: VecDeque::with_capacity(max_size),
             max_size,
         }
     }
@@ -878,17 +928,19 @@ impl ConnectionCostCache {
 
         let cost = compute()?;
 
-        // Simple cache eviction - clear if too large
+        if self.max_size == 0 {
+            return Ok(cost);
+        }
+
         if self.cache.len() >= self.max_size {
-            self.cache.clear();
+            if let Some(oldest_key) = self.order.pop_front() {
+                self.cache.remove(&oldest_key);
+            }
         }
 
         self.cache.insert(key, cost);
+        self.order.push_back(key);
         Ok(cost)
-    }
-
-    fn clear(&mut self) {
-        self.cache.clear();
     }
 }
 
@@ -945,8 +997,11 @@ impl<'a> Lattice<'a> {
             enodes,
             p: 1, // Start at position 1 (after BOS)
             dic,
-            cost_cache: ConnectionCostCache::new(10000), // Cache up to 10K cost lookups
-            surface_len_cache: HashMap::with_hasher(FastHasher::default()),
+            cost_cache: ConnectionCostCache::new(DEFAULT_COST_CACHE_SIZE),
+            surface_len_cache: HashMap::with_capacity_and_hasher(
+                SURFACE_LEN_CACHE_INITIAL_CAPACITY,
+                FastHasher::default(),
+            ),
         }
     }
 
@@ -994,18 +1049,18 @@ impl<'a> Lattice<'a> {
 
     /// Get cached surface length or compute and cache it
     fn get_surface_length(&mut self, surface: &str) -> usize {
+        if surface.is_empty() {
+            return 1;
+        }
+
         if let Some(&cached_len) = self.surface_len_cache.get(surface) {
             return cached_len;
         }
 
-        let len = if surface.is_empty() {
-            1
-        } else {
-            surface.chars().count()
-        };
+        let len = fast_surface_len(surface);
 
         // Cache for future use (limit cache size to prevent memory bloat)
-        if self.surface_len_cache.len() < 5000 {
+        if self.surface_len_cache.len() < SURFACE_LEN_CACHE_LIMIT {
             self.surface_len_cache
                 .insert(intern::intern_or_clone(surface), len);
         }
