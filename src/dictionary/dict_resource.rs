@@ -87,7 +87,10 @@ struct PackedConnectionMatrix {
 
 #[derive(Debug, Clone)]
 enum MorphemeIndexStorage {
-    Owned(Vec<Vec<u32>>),
+    Owned {
+        offsets: Vec<u32>,
+        values: Vec<u32>,
+    },
     Packed {
         mmap: Arc<Mmap>,
         entry_count: usize,
@@ -100,7 +103,6 @@ enum MorphemeIndexStorage {
 #[derive(Debug, Clone)]
 struct MorphemeIndex {
     storage: MorphemeIndexStorage,
-    cache: OnceCell<Arc<Vec<Vec<u32>>>>,
 }
 
 pub struct MorphemeIndexView<'a> {
@@ -444,17 +446,27 @@ const EMPTY_U32_SLICE: &[u32] = &[];
 impl MorphemeIndexStorage {
     fn len(&self) -> usize {
         match self {
-            MorphemeIndexStorage::Owned(vecs) => vecs.len(),
+            MorphemeIndexStorage::Owned { offsets, .. } => offsets.len().saturating_sub(1),
             MorphemeIndexStorage::Packed { entry_count, .. } => *entry_count,
         }
     }
 
     fn get(&self, idx: usize) -> &[u32] {
         match self {
-            MorphemeIndexStorage::Owned(vecs) => vecs
-                .get(idx)
-                .map(|v| v.as_slice())
-                .unwrap_or(EMPTY_U32_SLICE),
+            MorphemeIndexStorage::Owned { offsets, values } => {
+                if idx >= offsets.len().saturating_sub(1) {
+                    return EMPTY_U32_SLICE;
+                }
+
+                let start = offsets[idx] as usize;
+                let end = offsets[idx + 1] as usize;
+
+                if start > end || end > values.len() {
+                    return EMPTY_U32_SLICE;
+                }
+
+                &values[start..end]
+            }
             MorphemeIndexStorage::Packed {
                 mmap,
                 entry_count,
@@ -482,27 +494,23 @@ impl MorphemeIndexStorage {
             }
         }
     }
-
-    fn clone_to_vecs(&self) -> Vec<Vec<u32>> {
-        match self {
-            MorphemeIndexStorage::Owned(vecs) => vecs.clone(),
-            MorphemeIndexStorage::Packed { .. } => {
-                let len = self.len();
-                let mut out = Vec::with_capacity(len);
-                for idx in 0..len {
-                    out.push(self.get(idx).to_vec());
-                }
-                out
-            }
-        }
-    }
 }
 
 impl MorphemeIndex {
     fn from_vectors(vecs: Vec<Vec<u32>>) -> Self {
+        let mut offsets = Vec::with_capacity(vecs.len() + 1);
+        let mut values = Vec::new();
+        offsets.push(0);
+
+        for ids in vecs {
+            values.extend(ids);
+            let end = values.len();
+            let end_u32 = u32::try_from(end).expect("morpheme index exceeds u32 range");
+            offsets.push(end_u32);
+        }
+
         Self {
-            storage: MorphemeIndexStorage::Owned(vecs),
-            cache: OnceCell::new(),
+            storage: MorphemeIndexStorage::Owned { offsets, values },
         }
     }
 
@@ -527,7 +535,6 @@ impl MorphemeIndex {
                 offsets_offset: pack.offsets_offset,
                 values_offset: pack.values_offset,
             },
-            cache: OnceCell::new(),
         })
     }
 
@@ -537,16 +544,6 @@ impl MorphemeIndex {
 
     fn get(&self, idx: usize) -> &[u32] {
         self.storage.get(idx)
-    }
-
-    fn as_vec_slice(&self) -> &[Vec<u32>] {
-        match &self.storage {
-            MorphemeIndexStorage::Owned(vecs) => vecs.as_slice(),
-            MorphemeIndexStorage::Packed { .. } => self
-                .cache
-                .get_or_init(|| Arc::new(self.storage.clone_to_vecs()))
-                .as_slice(),
-        }
     }
 }
 
@@ -813,8 +810,11 @@ impl DictionaryResource {
     }
 
     /// Get morpheme index for mapping FST index IDs to vectors of morpheme IDs
-    pub fn get_morpheme_index(&self) -> &[Vec<u32>] {
-        self.morpheme_index.as_vec_slice()
+    ///
+    /// This method now returns a zero-copy view over the morpheme index data.
+    /// Callers that require an owned representation can collect from the view.
+    pub fn get_morpheme_index(&self) -> MorphemeIndexView<'_> {
+        self.morpheme_index_view()
     }
 
     pub fn morpheme_index_view(&self) -> MorphemeIndexView<'_> {
