@@ -12,7 +12,7 @@ pub const CONNECTIONS_PACK_HEADER_SIZE: usize = 4 + 2 + 4 + 4;
 pub const MORPHEME_PACK_FILE: &str = "morpheme_index.pack";
 pub const MORPHEME_PACK_MAGIC: &[u8; 4] = b"RNMI";
 pub const MORPHEME_PACK_VERSION: u16 = 1;
-pub const MORPHEME_PACK_FIXED_HEADER: usize = 4 + 2 + 4 + 4; // magic + version + entries + values
+pub const MORPHEME_PACK_FIXED_HEADER: usize = 4 + 2 + 2 + 4 + 4; // magic + version + padding + entries + values
 
 pub struct MorphemeIndexPack {
     pub mmap: Mmap,
@@ -180,8 +180,9 @@ pub fn load_morpheme_index_packed(
         });
     }
 
-    let entry_count = u32::from_le_bytes([mmap[6], mmap[7], mmap[8], mmap[9]]);
-    let value_count = u32::from_le_bytes([mmap[10], mmap[11], mmap[12], mmap[13]]);
+    // skip padding at 6..8
+    let entry_count = u32::from_le_bytes([mmap[8], mmap[9], mmap[10], mmap[11]]);
+    let value_count = u32::from_le_bytes([mmap[12], mmap[13], mmap[14], mmap[15]]);
 
     let offsets_len = entry_count as usize + 1;
     let offsets_bytes = offsets_len

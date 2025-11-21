@@ -326,6 +326,41 @@ impl Dictionary for UserDictionary {
             .get(left_id, right_id)
             .ok_or(RunomeError::InvalidConnectionId { left_id, right_id })
     }
+
+    fn lookup_into<'a>(
+        &'a self,
+        surface: &str,
+        buffer: &mut Vec<&'a DictEntry>,
+    ) -> Result<(), RunomeError> {
+        // Handle empty string case
+        if surface.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Use matcher to get index IDs matching the surface form
+        let mut index_ids = Vec::with_capacity(16);
+        let matched = self.matcher.run_into(surface, true, &mut index_ids)?;
+
+        // 2. If no matches found, return empty vector
+        if !matched {
+            return Ok(());
+        }
+
+        // 3. For each index ID, look up the morpheme IDs and resolve to entries
+        for index_id in index_ids {
+            let morpheme_ids = self.lookup_morpheme_ids(index_id);
+
+            for morpheme_id in morpheme_ids {
+                // Validate morpheme ID is within bounds
+                if let Some(entry) = self.entries.get(morpheme_id as usize) {
+                    // Entry is already a DictEntry - no conversion needed
+                    buffer.push(entry);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

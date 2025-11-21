@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
+use bumpalo::Bump;
+
 use crate::dictionary::{CategoryMask, DictEntry, Dictionary, SystemDictionary, UserDictionary};
 use crate::error::RunomeError;
 use crate::intern;
@@ -283,8 +285,8 @@ impl Tokenizer {
         if len == 0 { None } else { Some(len) }
     }
 
-    fn emit_dictionary_entries<'a>(
-        lattice: &mut Lattice<'a>,
+    fn emit_dictionary_entries<'a, 'b>(
+        lattice: &mut Lattice<'a, 'b>,
         entries: &[&'a DictEntry],
         node_type: NodeType,
         max_char_len: usize,
@@ -438,12 +440,16 @@ impl Tokenizer {
         let chunk_text = &text[..chunk_end];
         let chunk_view = ChunkCharView::new(chunk_text);
 
+        // Create arena for lattice nodes
+        let arena = Bump::new();
+
         // Create lattice for this chunk
         // Add +1 to lattice size to account for EOS position
         let lattice_size = chunk_view.len_chars() + 1;
         let mut lattice = Lattice::new(
             lattice_size,
             self.sys_dic.clone() as Arc<dyn crate::dictionary::Dictionary>,
+            &arena,
         );
 
         // Add dictionary entries to lattice
@@ -462,10 +468,10 @@ impl Tokenizer {
 
     /// Add dictionary entries to the lattice following Python's incremental approach
     /// This matches Python Janome's tokenize() method exactly
-    fn add_dictionary_entries<'a>(
+    fn add_dictionary_entries<'a, 'b>(
         &'a self,
-        lattice: &mut Lattice<'a>,
-        chunk: &ChunkCharView<'_>,
+        lattice: &mut Lattice<'a, 'b>,
+        chunk: &ChunkCharView<'a>,
         baseform_unk: bool,
     ) -> Result<(), RunomeError> {
         let total_chars = chunk.len_chars();
@@ -476,6 +482,8 @@ impl Tokenizer {
         let mut char_pos = 0;
         let char_categories_cache = self.precompute_char_categories(chunk)?;
         debug_assert_eq!(char_categories_cache.len(), total_chars);
+
+        let mut entries_buffer = Vec::with_capacity(64);
 
         while char_pos < total_chars {
             let mut matched = false;
@@ -489,11 +497,12 @@ impl Tokenizer {
 
                 // 1. User dictionary has precedence
                 if let Some(user_dic) = &self.user_dic {
-                    if let Ok(entries) = user_dic.lookup(search_slice) {
-                        if !entries.is_empty()
+                    entries_buffer.clear();
+                    if let Ok(()) = user_dic.lookup_into(search_slice, &mut entries_buffer) {
+                        if !entries_buffer.is_empty()
                             && Self::emit_dictionary_entries(
                                 lattice,
-                                &entries,
+                                &entries_buffer,
                                 NodeType::UserDict,
                                 max_char_len,
                             )?
@@ -504,11 +513,12 @@ impl Tokenizer {
                 }
 
                 // 2. System dictionary lookup
-                if let Ok(entries) = self.sys_dic.lookup(search_slice) {
-                    if !entries.is_empty()
+                entries_buffer.clear();
+                if let Ok(()) = self.sys_dic.lookup_into(search_slice, &mut entries_buffer) {
+                    if !entries_buffer.is_empty()
                         && Self::emit_dictionary_entries(
                             lattice,
-                            &entries,
+                            &entries_buffer,
                             NodeType::SysDict,
                             max_char_len,
                         )?
@@ -539,7 +549,7 @@ impl Tokenizer {
                 )?;
 
                 let base_form_option = if baseform_unk {
-                    Some(grouped_surface.as_str())
+                    Some(grouped_surface)
                 } else {
                     None
                 };
@@ -547,7 +557,7 @@ impl Tokenizer {
                 for entry in unknown_entries {
                     let unknown_node =
                         StartNode::Unknown(crate::lattice::UnknownNode::for_unknown_word(
-                            grouped_surface.clone(),
+                            grouped_surface,
                             entry.left_id,
                             entry.right_id,
                             entry.cost,
@@ -574,15 +584,15 @@ impl Tokenizer {
 
     /// Build grouped surface form following Python Janome's exact logic
     /// This version works with string byte positions like Python
-    fn build_grouped_surface_python_style(
+    fn build_grouped_surface_python_style<'a>(
         &self,
-        chunk: &ChunkCharView<'_>,
+        chunk: &ChunkCharView<'a>,
         start_char_index: usize,
         category_id: u16,
         char_categories_cache: &[CategoryMask],
-    ) -> Result<String, RunomeError> {
+    ) -> Result<&'a str, RunomeError> {
         if start_char_index >= chunk.len_chars() {
-            return Ok(String::new());
+            return Ok("");
         }
 
         let category_max_length = self.sys_dic.unknown_length_id(category_id);
@@ -592,12 +602,9 @@ impl Tokenizer {
             std::cmp::min(category_max_length, self.max_unknown_length)
         };
 
-        let remaining = chunk.len_chars() - start_char_index;
-        let target_capacity = max_length.min(remaining).max(1);
-        let mut buf = String::with_capacity(target_capacity);
-        buf.push(chunk.char_at(start_char_index));
         let mut current_len = 1;
         let base_mask = char_categories_cache[start_char_index];
+        let mut end_char_index = start_char_index + 1;
 
         for idx in (start_char_index + 1)..chunk.len_chars() {
             if current_len >= max_length {
@@ -613,14 +620,14 @@ impl Tokenizer {
             let compatible = base_mask.intersects(c_mask);
 
             if same_category || compatible {
-                buf.push(chunk.char_at(idx));
                 current_len += 1;
+                end_char_index += 1;
             } else {
                 break;
             }
         }
 
-        Ok(buf)
+        Ok(chunk.slice(start_char_index, end_char_index))
     }
 
     /// Pre-compute character categories for each character in the chunk.
@@ -860,16 +867,16 @@ mod tests {
         use crate::lattice::UnknownNode;
 
         let unknown_node = UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         );
 
@@ -886,16 +893,16 @@ mod tests {
         use crate::lattice::UnknownNode;
 
         let unknown_node = UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         );
 
@@ -913,16 +920,16 @@ mod tests {
 
         use crate::lattice::UnknownNode;
         let unknown_node = UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         );
         let token = Token::from_unknown_node(&unknown_node, true);

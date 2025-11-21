@@ -401,6 +401,14 @@ impl Dictionary for SystemDictionary {
     fn get_trans_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError> {
         self.get_trans_cost(left_id, right_id)
     }
+
+    fn lookup_into<'a>(
+        &'a self,
+        surface: &str,
+        buffer: &mut Vec<&'a DictEntry>,
+    ) -> Result<(), RunomeError> {
+        self.ram_dict.lookup_into(surface, buffer)
+    }
 }
 
 #[cfg(test)]

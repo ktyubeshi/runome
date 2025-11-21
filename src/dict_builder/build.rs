@@ -481,6 +481,8 @@ fn write_morpheme_index_pack(path: &Path, index: &[Vec<u32>]) -> Result<()> {
         .context("Failed to write morpheme index pack magic")?;
     file.write_all(&crate::dictionary::loader::MORPHEME_PACK_VERSION.to_le_bytes())
         .context("Failed to write morpheme index pack version")?;
+    // Add 2 bytes of padding to align to 4 bytes (16-byte header total)
+    file.write_all(&[0u8; 2]).context("Failed to write padding")?;
     file.write_all(&(entry_count as u32).to_le_bytes())
         .context("Failed to write morpheme index entry count")?;
     file.write_all(&(values.len() as u32).to_le_bytes())

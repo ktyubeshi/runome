@@ -12,3 +12,4 @@ __pycache__
 perf.*
 *.profile
 
+.DS_Store

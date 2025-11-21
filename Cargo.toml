@@ -30,6 +30,7 @@ unicode-normalization = "0.1"
 fxhash = "0.2"
 memmap2 = "0.9"
 smallvec = "1.13"
+bumpalo = "3.19.0"
 
 [dev-dependencies]
 tempfile = "3.8"

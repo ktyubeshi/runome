@@ -38,6 +38,25 @@ pub trait Dictionary {
     /// * `Ok(i16)` - Connection cost
     /// * `Err(RunomeError)` - Error if IDs are invalid
     fn get_trans_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError>;
+
+    /// Look up morphemes matching a surface form and append to buffer
+    ///
+    /// # Arguments
+    /// * `surface` - The surface form string to look up
+    /// * `buffer` - Buffer to append matching entries to
+    ///
+    /// # Returns
+    /// * `Ok(())` - Success
+    /// * `Err(RunomeError)` - Error if lookup fails
+    fn lookup_into<'a>(
+        &'a self,
+        surface: &str,
+        buffer: &mut Vec<&'a DictEntry>,
+    ) -> Result<(), RunomeError> {
+        let entries = self.lookup(surface)?;
+        buffer.extend(entries);
+        Ok(())
+    }
 }
 
 /// Matcher struct for FST-based string matching
@@ -129,33 +148,71 @@ impl Matcher {
         }
     }
 
-    /// Optimized prefix matching that iterates over char boundaries
-    fn run_prefix_match(&self, word: &str) -> Result<(bool, Vec<u64>), RunomeError> {
-        if word.is_empty() {
-            return Ok((false, Vec::new()));
-        }
-
-        let mut outputs = match &self.fst {
-            FstBacking::Owned(map) => Self::collect_prefix_outputs(map.as_fst(), word),
-            FstBacking::Mapped(map) => Self::collect_prefix_outputs(map.as_fst(), word),
-        };
-
-        if outputs.is_empty() {
-            Ok((false, Vec::new()))
+    pub fn run_into(
+        &self,
+        word: &str,
+        common_prefix_match: bool,
+        buffer: &mut Vec<u64>,
+    ) -> Result<bool, RunomeError> {
+        buffer.clear();
+        if common_prefix_match {
+            self.run_prefix_match_into(word, buffer)
         } else {
-            outputs.sort_unstable();
-            outputs.dedup();
-            Ok((true, outputs))
+            // Exact match only
+            if word.is_empty() {
+                return Ok(false);
+            }
+
+            match self.fst.get(word) {
+                Some(index_id) => {
+                    buffer.push(index_id);
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
         }
     }
 
-    fn collect_prefix_outputs<D: AsRef<[u8]>>(fst: &Fst<D>, word: &str) -> Vec<u64> {
+    /// Optimized prefix matching that iterates over char boundaries
+    fn run_prefix_match(&self, word: &str) -> Result<(bool, Vec<u64>), RunomeError> {
+        let mut outputs = Vec::with_capacity(16);
+        self.run_prefix_match_into(word, &mut outputs)?;
+        Ok((!outputs.is_empty(), outputs))
+    }
+
+    fn run_prefix_match_into(
+        &self,
+        word: &str,
+        buffer: &mut Vec<u64>,
+    ) -> Result<bool, RunomeError> {
+        if word.is_empty() {
+            return Ok(false);
+        }
+
+        match &self.fst {
+            FstBacking::Owned(map) => Self::collect_prefix_outputs_into(map.as_fst(), word, buffer),
+            FstBacking::Mapped(map) => Self::collect_prefix_outputs_into(map.as_fst(), word, buffer),
+        };
+
+        if buffer.is_empty() {
+            Ok(false)
+        } else {
+            buffer.sort_unstable();
+            buffer.dedup();
+            Ok(true)
+        }
+    }
+
+    fn collect_prefix_outputs_into<D: AsRef<[u8]>>(
+        fst: &Fst<D>,
+        word: &str,
+        buffer: &mut Vec<u64>,
+    ) {
         let mut node = fst.root();
         let mut out = Output::zero();
-        let mut outputs = Vec::new();
 
         if node.is_final() {
-            outputs.push(out.cat(node.final_output()).value());
+            buffer.push(out.cat(node.final_output()).value());
         }
 
         for &b in word.as_bytes() {
@@ -165,14 +222,12 @@ impl Matcher {
                     out = out.cat(transition.out);
                     node = fst.node(transition.addr);
                     if node.is_final() {
-                        outputs.push(out.cat(node.final_output()).value());
+                        buffer.push(out.cat(node.final_output()).value());
                     }
                 }
                 None => break,
             }
         }
-
-        outputs
     }
 }
 
@@ -228,23 +283,39 @@ impl RAMDictionary {
 
 impl Dictionary for RAMDictionary {
     fn lookup(&self, surface: &str) -> Result<Vec<&DictEntry>, RunomeError> {
+        let mut results = Vec::new();
+        self.lookup_into(surface, &mut results)?;
+        Ok(results)
+    }
+
+    fn lookup_into<'a>(
+        &'a self,
+        surface: &str,
+        buffer: &mut Vec<&'a DictEntry>,
+    ) -> Result<(), RunomeError> {
         // Handle empty string case
         if surface.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
 
         // 1. Use matcher to get index IDs matching the surface form
-        let (matched, index_ids) = self.matcher.run(surface, true)?;
+        // Use a small local buffer for indices to avoid allocation if possible
+        // Note: We allocate Vec<u64> here, but it's small and temporary.
+        // Ideally we'd pass this in too, but it's an internal detail.
+        let mut index_ids = Vec::with_capacity(16);
+        let matched = self.matcher.run_into(surface, true, &mut index_ids)?;
 
-        // 2. If no matches found, return empty vector
+        // 2. If no matches found, return
         if !matched {
-            return Ok(Vec::new());
+            return Ok(());
         }
 
         // 3. Get morpheme index and dictionary entries
         let morpheme_index = self.resource.morpheme_index_view();
         let entries = self.resource.get_entries();
-        let mut results = Vec::with_capacity(index_ids.len().saturating_mul(2));
+        
+        // Reserve space if we can estimate
+        buffer.reserve(index_ids.len());
 
         // 4. For each index ID, look up the morpheme IDs and resolve to entries
         for index_id in index_ids {
@@ -255,7 +326,7 @@ impl Dictionary for RAMDictionary {
                 if let Some(entry) = entries.get(morpheme_id as usize) {
                     // Filter out entries with empty surface forms
                     if !entry.surface.is_empty() {
-                        results.push(entry);
+                        buffer.push(entry);
                     }
                 } else {
                     // Log warning but continue processing other valid IDs
@@ -267,8 +338,7 @@ impl Dictionary for RAMDictionary {
             }
         }
 
-        // 5. Return references to DictEntry structs
-        Ok(results)
+        Ok(())
     }
 
     fn get_trans_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError> {

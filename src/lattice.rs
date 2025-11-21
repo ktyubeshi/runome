@@ -2,6 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
+use bumpalo::Bump;
+
 use crate::dictionary::{DictEntry, Dictionary};
 use crate::error::RunomeError;
 use crate::intern;
@@ -251,21 +253,21 @@ impl<'a> LatticeNode for Node<'a> {
     }
 }
 
-/// Node for unknown words that owns its morphological data
+/// Node for unknown words that borrows its morphological data
 #[derive(Debug)]
-pub struct UnknownNode {
-    /// Morphological data (owned since it's constructed dynamically)
-    surface: String,
+pub struct UnknownNode<'a> {
+    /// Morphological data (borrowed)
+    surface: &'a str,
     surface_len: usize,
     left_id: u16,
     right_id: u16,
     cost: i16,
-    part_of_speech: String,
-    inflection_type: String,
-    inflection_form: String,
-    base_form: String,
-    reading: String,
-    phonetic: String,
+    part_of_speech: &'a str,
+    inflection_type: &'a str,
+    inflection_form: &'a str,
+    base_form: &'a str,
+    reading: &'a str,
+    phonetic: &'a str,
     node_type: NodeType,
 
     /// Viterbi algorithm fields
@@ -276,23 +278,23 @@ pub struct UnknownNode {
     index: usize,
 }
 
-impl UnknownNode {
-    /// Create a new UnknownNode with owned morphological data
+impl<'a> UnknownNode<'a> {
+    /// Create a new UnknownNode with borrowed morphological data
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        surface: String,
+        surface: &'a str,
         left_id: u16,
         right_id: u16,
         cost: i16,
-        part_of_speech: String,
-        inflection_type: String,
-        inflection_form: String,
-        base_form: String,
-        reading: String,
-        phonetic: String,
+        part_of_speech: &'a str,
+        inflection_type: &'a str,
+        inflection_form: &'a str,
+        base_form: &'a str,
+        reading: &'a str,
+        phonetic: &'a str,
         node_type: NodeType,
     ) -> Self {
-        let surface_len = compute_surface_len(&surface);
+        let surface_len = compute_surface_len(surface);
         Self {
             surface,
             surface_len,
@@ -317,20 +319,20 @@ impl UnknownNode {
     /// Create an UnknownNode for true unknown words with default morphological values
     /// This is highly optimized for the common case where most fields are "*"
     pub fn for_unknown_word(
-        surface: String,
+        surface: &'a str,
         left_id: u16,
         right_id: u16,
         cost: i16,
-        part_of_speech: &str,
-        base_form: Option<&str>,
+        part_of_speech: &'a str,
+        base_form: Option<&'a str>,
         node_type: NodeType,
     ) -> Self {
-        let base_form_string = match base_form {
-            Some(bf) => intern::intern_or_clone(bf),
-            None => intern::ASTERISK.to_string(),
-        };
+        let base_form_str = base_form.unwrap_or(intern::ASTERISK);
+        let surface_len = compute_surface_len(surface);
 
-        let surface_len = compute_surface_len(&surface);
+        // We assume part_of_speech comes from dictionary (so it's long-lived)
+        // or it's a static string.
+        // Other fields are default "*" (static).
 
         Self {
             surface,
@@ -338,12 +340,12 @@ impl UnknownNode {
             left_id,
             right_id,
             cost,
-            part_of_speech: intern::intern_or_clone(part_of_speech),
-            inflection_type: intern::ASTERISK.to_string(),
-            inflection_form: intern::ASTERISK.to_string(),
-            base_form: base_form_string,
-            reading: intern::ASTERISK.to_string(),
-            phonetic: intern::ASTERISK.to_string(),
+            part_of_speech,
+            inflection_type: intern::ASTERISK,
+            inflection_form: intern::ASTERISK,
+            base_form: base_form_str,
+            reading: intern::ASTERISK,
+            phonetic: intern::ASTERISK,
             node_type,
             min_cost: i32::MAX,
             back_pos: -1,
@@ -354,9 +356,9 @@ impl UnknownNode {
     }
 }
 
-impl LatticeNode for UnknownNode {
+impl<'a> LatticeNode for UnknownNode<'a> {
     fn surface(&self) -> &str {
-        &self.surface
+        self.surface
     }
 
     fn left_id(&self) -> u16 {
@@ -424,27 +426,27 @@ impl LatticeNode for UnknownNode {
     }
 
     fn part_of_speech(&self) -> &str {
-        &self.part_of_speech
+        self.part_of_speech
     }
 
     fn inflection_type(&self) -> &str {
-        &self.inflection_type
+        self.inflection_type
     }
 
     fn inflection_form(&self) -> &str {
-        &self.inflection_form
+        self.inflection_form
     }
 
     fn base_form(&self) -> &str {
-        &self.base_form
+        self.base_form
     }
 
     fn reading(&self) -> &str {
-        &self.reading
+        self.reading
     }
 
     fn phonetic(&self) -> &str {
-        &self.phonetic
+        self.phonetic
     }
 }
 
@@ -730,7 +732,7 @@ pub struct NodeRef {
 #[derive(Debug)]
 pub enum StartNode<'a> {
     Dict(Node<'a>),
-    Unknown(UnknownNode),
+    Unknown(UnknownNode<'a>),
     Bos(BOS),
     Eos(EOS),
 }
@@ -921,9 +923,11 @@ impl ConnectionCostCache {
     }
 }
 
-pub struct Lattice<'a> {
+pub struct Lattice<'a, 'b> {
+    /// Arena allocator for nodes
+    arena: &'b Bump,
     /// Start nodes at each position - snodes[pos][index]
-    snodes: Vec<Vec<StartNode<'a>>>,
+    snodes: Vec<Vec<&'b StartNode<'a>>>,
     /// Ultra-optimized end nodes with inlined critical data (eliminates indirection)
     enodes: Vec<Vec<CompactEndNode>>,
     /// Current position pointer
@@ -934,7 +938,7 @@ pub struct Lattice<'a> {
     cost_cache: ConnectionCostCache,
 }
 
-impl<'a> Lattice<'a> {
+impl<'a, 'b> Lattice<'a, 'b> {
     /// Create a new lattice with the specified size and dictionary
     ///
     /// Initializes the lattice with BOS node at position 0 and pre-allocates
@@ -943,10 +947,11 @@ impl<'a> Lattice<'a> {
     /// # Arguments
     /// * `size` - Maximum number of positions in the lattice
     /// * `dic` - Dictionary reference for connection cost calculations
+    /// * `arena` - Arena allocator for nodes
     ///
     /// # Returns
     /// * New Lattice instance with BOS node initialized
-    pub fn new(size: usize, dic: Arc<dyn Dictionary>) -> Self {
+    pub fn new(size: usize, dic: Arc<dyn Dictionary>, arena: &'b Bump) -> Self {
         // Initialize snodes and enodes vectors
         // We need positions 0 through size+1 (size+2 total positions)
         let mut snodes = Vec::with_capacity(size + 2);
@@ -962,12 +967,15 @@ impl<'a> Lattice<'a> {
         let mut bos = StartNode::Bos(BOS::new());
         bos.set_pos(0);
         bos.set_index(0);
-        snodes[0].push(bos);
+        
+        let bos_ref = arena.alloc(bos);
+        snodes[0].push(&*bos_ref);
 
         let bos_compact = CompactEndNode::from_node(snodes[0][0].inner(), 0, 0);
         enodes[1].push(bos_compact);
 
         Self {
+            arena,
             snodes,
             enodes,
             p: 1, // Start at position 1 (after BOS)
@@ -977,10 +985,12 @@ impl<'a> Lattice<'a> {
     }
 
     /// Get a node by reference - helper method for efficient node access
-    fn get_node(&self, node_ref: &NodeRef) -> Option<&StartNode<'a>> {
+    #[cfg(test)]
+    fn get_node(&self, node_ref: &NodeRef) -> Option<&'b StartNode<'a>> {
         self.snodes
             .get(node_ref.pos)
             .and_then(|nodes| nodes.get(node_ref.index))
+            .copied()
     }
 
     /// Ensure lattice capacity for a given position (optimized growth)
@@ -1009,7 +1019,7 @@ impl<'a> Lattice<'a> {
     }
 
     /// Get reference to start nodes at the specified position
-    pub fn start_nodes(&self, pos: usize) -> Option<&Vec<StartNode<'a>>> {
+    pub fn start_nodes(&self, pos: usize) -> Option<&Vec<&'b StartNode<'a>>> {
         self.snodes.get(pos)
     }
 
@@ -1174,10 +1184,12 @@ impl<'a> Lattice<'a> {
         // Optimized lattice expansion
         self.ensure_capacity(end_pos);
 
-        // Add to start nodes
-        self.snodes[self.p].push(node);
+        // Add to start nodes - allocate in Arena
+        let node_ref = self.arena.alloc(node);
+        self.snodes[self.p].push(&*node_ref);
 
         // Create ultra-compact end node with inlined critical data (major optimization!)
+        // dereference ** to get &StartNode
         let compact_end_node = CompactEndNode::from_node(
             self.snodes[self.p].last().unwrap().inner(),
             self.p,
@@ -1246,7 +1258,7 @@ impl<'a> Lattice<'a> {
     /// # Path Structure
     /// The returned path always starts with BOS and ends with EOS:
     /// `[BOS, word1, word2, ..., wordN, EOS]`
-    pub fn backward(&self) -> Result<Vec<&StartNode<'a>>, RunomeError> {
+    pub fn backward(&self) -> Result<Vec<&'b StartNode<'a>>, RunomeError> {
         // Validate that lattice is properly finalized with EOS
         if self.snodes.is_empty() {
             return Err(RunomeError::DictValidationError {
@@ -1262,7 +1274,7 @@ impl<'a> Lattice<'a> {
         }
 
         // Start from EOS node (should be at last position, index 0)
-        let eos_node = &self.snodes[last_pos][0];
+        let eos_node = self.snodes[last_pos][0];
         if eos_node.surface() != "__EOS__" {
             return Err(RunomeError::DictValidationError {
                 reason: "Final node is not EOS".to_string(),
@@ -1270,7 +1282,7 @@ impl<'a> Lattice<'a> {
         }
 
         // Trace back through optimal path
-        let mut path: Vec<&StartNode<'a>> = Vec::new();
+        let mut path: Vec<&'b StartNode<'a>> = Vec::new();
         let mut current_pos = last_pos;
         let mut current_index = 0;
 
@@ -1286,7 +1298,7 @@ impl<'a> Lattice<'a> {
                 });
             }
 
-            let current_node = &self.snodes[current_pos][current_index];
+            let current_node = self.snodes[current_pos][current_index];
             path.push(current_node);
 
             // Check if we've reached BOS (back_pos = -1)
@@ -1343,7 +1355,7 @@ impl<'a> Lattice<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for Lattice<'a> {
+impl<'a, 'b> std::fmt::Debug for Lattice<'a, 'b> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Lattice")
             .field("p", &self.p)
@@ -1359,6 +1371,7 @@ mod tests {
     use super::*;
     use crate::dictionary::DictEntry;
     use std::sync::Arc;
+    use bumpalo::Bump;
 
     fn create_test_dict_entry() -> DictEntry {
         DictEntry {
@@ -1399,16 +1412,16 @@ mod tests {
     #[test]
     fn test_unknown_node_creation() {
         let unknown = UnknownNode::new(
-            "未知語".to_string(),
+            "未知語",
             300,
             400,
             500,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "未知語".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "未知語",
+            "*",
+            "*",
             NodeType::Unknown,
         );
 
@@ -1540,7 +1553,8 @@ mod tests {
     #[test]
     fn test_lattice_creation() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let lattice = Lattice::new(10, dic, &arena);
 
         // Check basic properties
         assert_eq!(lattice.position(), 1); // Starts at position 1
@@ -1573,7 +1587,8 @@ mod tests {
     #[test]
     fn test_lattice_validation() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(5, dic);
+        let arena = Bump::new();
+        let lattice = Lattice::new(5, dic, &arena);
 
         // Should be valid after creation
         assert!(lattice.is_valid());
@@ -1586,7 +1601,8 @@ mod tests {
     #[test]
     fn test_lattice_empty_positions() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(3, dic);
+        let arena = Bump::new();
+        let lattice = Lattice::new(3, dic, &arena);
 
         // Positions 1, 2, 3 should be empty initially (except enodes[1] has BOS)
         assert_eq!(lattice.start_nodes(1).unwrap().len(), 0);
@@ -1602,7 +1618,8 @@ mod tests {
     #[test]
     fn test_lattice_bounds_checking() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(2, dic);
+        let arena = Bump::new();
+        let lattice = Lattice::new(2, dic, &arena);
 
         // Valid positions
         assert!(lattice.start_nodes(0).is_some());
@@ -1617,7 +1634,8 @@ mod tests {
     #[test]
     fn test_lattice_dictionary_access() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(5, dic.clone());
+        let arena = Bump::new();
+        let lattice = Lattice::new(5, dic.clone(), &arena);
 
         // Should be able to access the dictionary
         let lattice_dic = lattice.dictionary();
@@ -1629,7 +1647,8 @@ mod tests {
     #[test]
     fn test_lattice_zero_size() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(0, dic);
+        let arena = Bump::new();
+        let lattice = Lattice::new(0, dic, &arena);
 
         // Should still be valid with just BOS
         assert!(lattice.is_valid());
@@ -1645,20 +1664,21 @@ mod tests {
     #[test]
     fn test_add_method_basic() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena);
 
         // Create an unknown node to add (avoids lifetime issues)
         let node = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -1691,34 +1711,35 @@ mod tests {
     #[test]
     fn test_add_method_multiple_nodes() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena);
 
         // Create multiple unknown nodes with different surface forms
         let node1 = StartNode::Unknown(UnknownNode::new(
-            "テスト1".to_string(),
+            "テスト1",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト1".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト1",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
         let node2 = StartNode::Unknown(UnknownNode::new(
-            "テスト2".to_string(),
+            "テスト2",
             101,
             201,
             200,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト2".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト2",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -1750,20 +1771,21 @@ mod tests {
     #[test]
     fn test_add_method_cost_calculation() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena);
 
         // Create an unknown node with cost = 150
         let node = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -1786,20 +1808,21 @@ mod tests {
     #[test]
     fn test_add_method_unknown_node() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena);
 
         // Create an unknown node
         let unknown_node = StartNode::Unknown(UnknownNode::new(
-            "未知語".to_string(),
+            "未知語",
             300,
             400,
             500,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "未知語".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "未知語",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -1830,20 +1853,21 @@ mod tests {
     #[test]
     fn test_add_method_lattice_expansion() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(2, dic); // Small lattice
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(2, dic, &arena); // Small lattice
 
         // Create an unknown node with long surface (will extend beyond initial size)
         let node = StartNode::Unknown(UnknownNode::new(
-            "とても長い表面形".to_string(), // 7 characters
+            "とても長い表面形", // 7 characters
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "とても長い表面形".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "とても長い表面形",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -1883,20 +1907,21 @@ mod tests {
     #[test]
     fn test_add_method_viterbi_optimization() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena);
 
         // Add first node at position 1
         let node1 = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
         assert!(lattice.add(node1).is_ok());
@@ -1906,16 +1931,16 @@ mod tests {
 
         // Add second node that should connect to the first
         let node2 = StartNode::Unknown(UnknownNode::new(
-            "語".to_string(), // 1 character
+            "語", // 1 character
             101,
             201,
             100,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "語".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "語",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
         assert!(lattice.add(node2).is_ok());
@@ -1967,7 +1992,8 @@ mod tests {
 
         // Test string "すもも" (3 characters)
         let s = "すもも";
-        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone());
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone(), &arena);
 
         // Step 1: Look up "すもも" and add all entries
         let entries_result = sys_dict.lookup(s);
@@ -2063,20 +2089,21 @@ mod tests {
     #[test]
     fn test_end_method_basic() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(5, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(5, dic, &arena);
 
         // Add an unknown node first
         let node = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
         assert!(lattice.add(node).is_ok());
@@ -2116,20 +2143,21 @@ mod tests {
     #[test]
     fn test_end_method_cost_calculation() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(5, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(5, dic, &arena);
 
         // Add an unknown node with known cost = 150
         let node = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
         assert!(lattice.add(node).is_ok());
@@ -2161,20 +2189,21 @@ mod tests {
     #[test]
     fn test_end_method_truncation() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic); // Large lattice
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena); // Large lattice
 
         // Add a short unknown node
         let node = StartNode::Unknown(UnknownNode::new(
-            "短".to_string(), // 1 character
+            "短", // 1 character
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "短".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "短",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
         assert!(lattice.add(node).is_ok());
@@ -2204,23 +2233,24 @@ mod tests {
     #[test]
     fn test_forward_method() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(10, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(10, dic, &arena);
 
         // Initially at position 1
         assert_eq!(lattice.position(), 1);
 
         // Add an unknown node to create end nodes (3-character surface)
         let node = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(), // 3 characters
+            "テスト", // 3 characters
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
         assert!(lattice.add(node).is_ok());
@@ -2264,7 +2294,8 @@ mod tests {
 
         // Test string "すもも" (3 characters) - same as Python test
         let s = "すもも";
-        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone());
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone(), &arena);
 
         // Step 1: Look up "すもも" and add all entries
         let entries_result = sys_dict.lookup(s);
@@ -2457,20 +2488,21 @@ mod tests {
     #[test]
     fn test_backward_method_basic() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(3, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(3, dic, &arena);
 
         // Add a simple chain: BOS -> node1 -> EOS
         let node1 = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -2498,7 +2530,8 @@ mod tests {
     #[test]
     fn test_backward_method_empty_lattice() {
         let dic = create_mock_dictionary();
-        let lattice = Lattice::new(0, dic);
+        let arena = Bump::new();
+        let lattice = Lattice::new(0, dic, &arena);
 
         // Try backward on lattice without EOS
         let path_result = lattice.backward();
@@ -2511,20 +2544,21 @@ mod tests {
     #[test]
     fn test_backward_method_unfinalized_lattice() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(3, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(3, dic, &arena);
 
         // Add a node but don't call end()
         let node = StartNode::Unknown(UnknownNode::new(
-            "テスト".to_string(),
+            "テスト",
             100,
             200,
             150,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "テスト".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "テスト",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -2538,20 +2572,21 @@ mod tests {
     #[test]
     fn test_backward_method_multiple_nodes() {
         let dic = create_mock_dictionary();
-        let mut lattice = Lattice::new(5, dic);
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(5, dic, &arena);
 
         // Add multiple nodes: BOS -> node1 -> node2 -> EOS
         let node1 = StartNode::Unknown(UnknownNode::new(
-            "日本".to_string(),
+            "日本",
             100,
             200,
             150,
-            "名詞,固有名詞,地域,国,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "日本".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,固有名詞,地域,国,*,*",
+            "*",
+            "*",
+            "日本",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -2559,16 +2594,16 @@ mod tests {
         lattice.forward();
 
         let node2 = StartNode::Unknown(UnknownNode::new(
-            "語".to_string(),
+            "語",
             200,
             300,
             100,
-            "名詞,一般,*,*,*,*".to_string(),
-            "*".to_string(),
-            "*".to_string(),
-            "語".to_string(),
-            "*".to_string(),
-            "*".to_string(),
+            "名詞,一般,*,*,*,*",
+            "*",
+            "*",
+            "語",
+            "*",
+            "*",
             NodeType::Unknown,
         ));
 
@@ -2615,7 +2650,8 @@ mod tests {
 
         // Simple test with "すもも" (3 characters)
         let s = "すもも";
-        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone());
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone(), &arena);
 
         // Replicate the Python test pattern exactly
         let mut pos = 0;
@@ -2698,7 +2734,8 @@ mod tests {
         let s = "すもももももももものうち";
 
         // Python test: lattice = Lattice(len(s), SYS_DIC)
-        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone());
+        let arena = Bump::new();
+        let mut lattice = Lattice::new(s.chars().count(), sys_dict.clone(), &arena);
 
         // Python test: pos = 0; while pos < len(s): ...
         let mut pos = 0;
