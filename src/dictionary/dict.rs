@@ -39,6 +39,16 @@ pub trait Dictionary {
     /// * `Err(RunomeError)` - Error if IDs are invalid
     fn get_trans_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError>;
 
+    /// Unsafe version of get_trans_cost that skips bounds checking.
+    /// Used in hot paths where IDs are known to be valid.
+    ///
+    /// # Safety
+    /// Caller must ensure left_id and right_id are within the matrix bounds.
+    unsafe fn get_trans_cost_unchecked(&self, left_id: u16, right_id: u16) -> i16 {
+        // Default implementation falls back to safe version (but unwrap to avoid Result overhead in release if optimized out)
+        self.get_trans_cost(left_id, right_id).unwrap_or(i16::MAX)
+    }
+
     /// Look up morphemes matching a surface form and append to buffer
     ///
     /// # Arguments
@@ -429,6 +439,14 @@ impl Dictionary for RAMDictionary {
     fn get_trans_cost(&self, left_id: u16, right_id: u16) -> Result<i16, RunomeError> {
         // Delegate to DictionaryResource connection cost method
         self.resource.get_connection_cost(left_id, right_id)
+    }
+
+    unsafe fn get_trans_cost_unchecked(&self, left_id: u16, right_id: u16) -> i16 {
+        unsafe {
+            self.resource
+                .connection_matrix_view()
+                .get_unchecked(left_id, right_id)
+        }
     }
 }
 

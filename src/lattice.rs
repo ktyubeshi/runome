@@ -1060,7 +1060,11 @@ impl<'a, 'b> Lattice<'a, 'b> {
         if end_nodes.len() == 1 {
             // Hot path specialization: single predecessor (most common case)
             let enode = &end_nodes[0];
-            let connection_cost = self.dic.get_trans_cost(enode.right_id, node_left_id)?;
+            // SAFETY: Dictionary IDs loaded from valid dictionary files are guaranteed to be within matrix bounds.
+            let connection_cost = unsafe {
+                self.dic
+                    .get_trans_cost_unchecked(enode.right_id, node_left_id)
+            };
 
             let total_cost = enode
                 .min_cost
@@ -1074,7 +1078,11 @@ impl<'a, 'b> Lattice<'a, 'b> {
             // Multiple predecessors: optimized loop with direct costs and inlined data
             for enode in end_nodes {
                 // Calculate connection cost directly
-                let connection_cost = self.dic.get_trans_cost(enode.right_id, node_left_id)?;
+                // SAFETY: Same as above
+                let connection_cost = unsafe {
+                    self.dic
+                        .get_trans_cost_unchecked(enode.right_id, node_left_id)
+                };
 
                 let total_cost = enode
                     .min_cost
@@ -1492,6 +1500,10 @@ mod tests {
             _right_id: u16,
         ) -> Result<i16, crate::error::RunomeError> {
             Ok(100) // Return fixed cost for testing
+        }
+
+        unsafe fn get_trans_cost_unchecked(&self, _left_id: u16, _right_id: u16) -> i16 {
+            100
         }
     }
 

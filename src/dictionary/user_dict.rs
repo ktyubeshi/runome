@@ -330,6 +330,14 @@ impl Dictionary for UserDictionary {
             .ok_or(RunomeError::InvalidConnectionId { left_id, right_id })
     }
 
+    unsafe fn get_trans_cost_unchecked(&self, left_id: u16, right_id: u16) -> i16 {
+        unsafe {
+            self.connections
+                .inner
+                .get_unchecked(left_id, right_id)
+        }
+    }
+
     fn lookup_into_with_index_buffer<'a>(
         &'a self,
         surface: &str,

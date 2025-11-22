@@ -258,6 +258,10 @@ impl Dictionary for SystemDictionary {
         self.get_trans_cost(left_id, right_id)
     }
 
+    unsafe fn get_trans_cost_unchecked(&self, left_id: u16, right_id: u16) -> i16 {
+        unsafe { self.ram_dict.get_trans_cost_unchecked(left_id, right_id) }
+    }
+
     fn lookup_into<'a>(
         &'a self,
         surface: &str,

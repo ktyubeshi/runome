@@ -367,51 +367,46 @@ pub enum TokenizeResult {
 struct ChunkCharView<'a> {
     text: &'a str,
     offsets: Vec<usize>,
-    chars: Vec<char>,
 }
 
 impl<'a> ChunkCharView<'a> {
     fn new(text: &'a str) -> Self {
+        // capacity is +1 (EOS)
         let mut offsets = Vec::with_capacity(text.len().saturating_add(1));
-        let mut chars = Vec::with_capacity(text.len());
 
-        for (byte_offset, ch) in text.char_indices() {
+        // Only store offsets, no char copying
+        for (byte_offset, _) in text.char_indices() {
             offsets.push(byte_offset);
-            chars.push(ch);
         }
         offsets.push(text.len());
 
         Self {
             text,
             offsets,
-            chars,
         }
     }
 
     #[inline]
     fn len_chars(&self) -> usize {
-        self.chars.len()
+        self.offsets.len().saturating_sub(1)
     }
 
     #[inline]
     fn slice(&self, start: usize, end: usize) -> &'a str {
         debug_assert!(start <= end);
-        let start_byte = if start < self.offsets.len() {
-            self.offsets[start]
-        } else {
-            self.text.len()
-        };
-        let end_byte = if end < self.offsets.len() {
-            self.offsets[end]
-        } else {
-            *self.offsets.last().unwrap_or(&self.text.len())
-        };
+        // Use get_unchecked in release mode could be an option, but standard indexing is safer
+        let start_byte = *self.offsets.get(start).unwrap_or(&self.text.len());
+        let end_byte = *self.offsets.get(end).unwrap_or(&self.text.len());
         &self.text[start_byte..end_byte]
     }
 
     #[inline]
     fn char_at(&self, index: usize) -> char {
-        self.chars[index]
+        let start = self.offsets[index];
+        // If index+1 exists, use it as end, otherwise use text length
+        let end = self.offsets.get(index + 1).copied().unwrap_or(self.text.len());
+        // This slice is guaranteed to be a valid char boundary and contain exactly one char
+        self.text[start..end].chars().next().unwrap()
     }
 }
 

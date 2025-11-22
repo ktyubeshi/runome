@@ -77,7 +77,7 @@ enum ConnectionMatrixStorage {
 }
 
 #[derive(Debug, Clone)]
-struct PackedConnectionMatrix {
+pub(crate) struct PackedConnectionMatrix {
     rows: u32,
     cols: u32,
     len: usize,
@@ -110,7 +110,7 @@ pub struct MorphemeIndexView<'a> {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionMatrix {
-    inner: Arc<PackedConnectionMatrix>,
+    pub(crate) inner: Arc<PackedConnectionMatrix>,
 }
 
 pub struct ConnectionMatrixView<'a> {
@@ -400,6 +400,13 @@ impl PackedConnectionMatrix {
         Some(&self.as_slice()[start..end])
     }
 
+    #[inline]
+    pub unsafe fn get_unchecked(&self, left_id: u16, right_id: u16) -> i16 {
+        let cols = self.cols as usize;
+        let idx = (left_id as usize) * cols + (right_id as usize);
+        unsafe { *self.as_slice().get_unchecked(idx) }
+    }
+
     fn as_slice(&self) -> &[i16] {
         match &self.storage {
             ConnectionMatrixStorage::Owned(data) => data,
@@ -634,6 +641,11 @@ impl<'a> ConnectionMatrixView<'a> {
     #[inline]
     pub fn row(&self, row: usize) -> Option<&'a [i16]> {
         self.matrix.row_slice(row)
+    }
+
+    #[inline]
+    pub unsafe fn get_unchecked(&self, left_id: u16, right_id: u16) -> i16 {
+        unsafe { self.matrix.get_unchecked(left_id, right_id) }
     }
 }
 
