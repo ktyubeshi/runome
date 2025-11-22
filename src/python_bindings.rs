@@ -18,7 +18,7 @@ impl From<RunomeError> for PyErr {
 }
 
 /// Python Token class - mirrors Janome Token exactly
-#[pyclass(name = "Token")]
+#[pyclass(name = "Token", freelist = 1024)]
 #[derive(Clone)]
 pub struct PyToken {
     inner: RustToken,

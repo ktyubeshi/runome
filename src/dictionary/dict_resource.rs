@@ -139,6 +139,8 @@ struct CategoryIndex {
     flags: Vec<CategoryFlags>,
     code_ranges: Vec<CodePointCategory>,
     default_id: Option<CategoryId>,
+    // BMP (0x0000 - 0xFFFF) cache for direct lookup
+    bmp_cache: Box<[CategoryMask; 65536]>,
 }
 
 impl CategoryIndex {
@@ -203,12 +205,19 @@ impl CategoryIndex {
 
         code_ranges.sort_by_key(|entry| entry.start);
 
+        // Build BMP cache
+        let mut bmp_cache = Box::new([CategoryMask::empty(); 65536]);
+        for cp in 0..=0xFFFFu32 {
+            bmp_cache[cp as usize] = Self::compute_mask_for_char(cp, &code_ranges, default_id);
+        }
+
         Ok(Self {
             name_to_id,
             names,
             flags,
             code_ranges,
             default_id,
+            bmp_cache,
         })
     }
 
@@ -228,21 +237,21 @@ impl CategoryIndex {
         self.flags[id as usize]
     }
 
-    fn category_mask_for_char(&self, ch: char) -> CategoryMask {
-        let cp = ch as u32;
+    fn compute_mask_for_char(
+        cp: u32,
+        code_ranges: &[CodePointCategory],
+        default_id: Option<CategoryId>,
+    ) -> CategoryMask {
         let mut mask = CategoryMask::empty();
 
         // Find the first entry where start > cp
         // All matches must be before this index
-        let limit = self.code_ranges.partition_point(|entry| entry.start <= cp);
+        let limit = code_ranges.partition_point(|entry| entry.start <= cp);
 
         // Scan backwards from limit
-        // We use a heuristic limit to avoid scanning back to 0 for large codepoints
-        // We assume matching ranges are clustered near the partition point (e.g. Kanji, Kanjinumeric)
-        // 32 items should be sufficient for standard dictionaries
         let start_idx = limit.saturating_sub(32);
-        
-        for entry in self.code_ranges[start_idx..limit].iter().rev() {
+
+        for entry in code_ranges[start_idx..limit].iter().rev() {
             if entry.end >= cp {
                 mask.insert(entry.primary_id);
                 mask = mask.union(entry.compat_mask);
@@ -250,11 +259,23 @@ impl CategoryIndex {
         }
 
         if mask.is_empty() {
-            if let Some(default_id) = self.default_id {
-                mask.insert(default_id);
+            if let Some(id) = default_id {
+                mask.insert(id);
             }
         }
         mask
+    }
+
+    fn category_mask_for_char(&self, ch: char) -> CategoryMask {
+        let cp = ch as u32;
+
+        // Fast path for BMP characters
+        if cp <= 0xFFFF {
+            // SAFETY: indices 0..=0xFFFF are valid for [CategoryMask; 65536]
+            unsafe { return *self.bmp_cache.get_unchecked(cp as usize) };
+        }
+
+        Self::compute_mask_for_char(cp, &self.code_ranges, self.default_id)
     }
 
     fn category_ids_for_char(&self, ch: char) -> SmallVec<[CategoryId; 8]> {
