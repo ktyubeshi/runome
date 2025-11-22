@@ -2,6 +2,7 @@
 /mecab-ipadic-2.7.0-20070801
 /sysdic
 /tmp/**
+/.tox/
 
 __pycache__
 
