@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DictEntry {
     pub surface: String,
+    pub surface_len: u16, // Character length (not byte length)
     pub left_id: u16,
     pub right_id: u16,
     pub cost: i16,

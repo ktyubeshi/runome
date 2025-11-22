@@ -224,6 +224,7 @@ mod fst_building_tests {
     fn test_build_fst_single_entry() {
         let entries = vec![DictEntry {
             surface: "東京".to_string(),
+            surface_len: 2,
             left_id: 1288,
             right_id: 1288,
             cost: 4569,
@@ -254,6 +255,7 @@ mod fst_building_tests {
         let entries = vec![
             DictEntry {
                 surface: "東京".to_string(),
+                surface_len: 2,
                 left_id: 1288,
                 right_id: 1288,
                 cost: 4569,
@@ -267,6 +269,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "東京".to_string(),
+                surface_len: 2,
                 left_id: 1285,
                 right_id: 1285,
                 cost: 4000,
@@ -298,6 +301,7 @@ mod fst_building_tests {
         let entries = vec![
             DictEntry {
                 surface: "東京".to_string(),
+                surface_len: 2,
                 left_id: 1288,
                 right_id: 1288,
                 cost: 4569,
@@ -311,6 +315,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "大阪".to_string(),
+                surface_len: 2,
                 left_id: 1288,
                 right_id: 1288,
                 cost: 4000,
@@ -363,6 +368,7 @@ mod fst_building_tests {
         let entries = vec![
             DictEntry {
                 surface: "東京".to_string(),
+                surface_len: 2,
                 left_id: 1288,
                 right_id: 1288,
                 cost: 4569,
@@ -376,6 +382,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "東京".to_string(),
+                surface_len: 2,
                 left_id: 1285,
                 right_id: 1285,
                 cost: 4000,
@@ -389,6 +396,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "東京".to_string(),
+                surface_len: 2,
                 left_id: 1290,
                 right_id: 1290,
                 cost: 3500,
@@ -402,6 +410,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "大阪".to_string(),
+                surface_len: 2,
                 left_id: 1288,
                 right_id: 1288,
                 cost: 4200,
@@ -447,6 +456,7 @@ mod fst_building_tests {
         let entries = vec![
             DictEntry {
                 surface: "こんにちは".to_string(), // Hiragana
+                surface_len: 5,
                 left_id: 1,
                 right_id: 1,
                 cost: 100,
@@ -460,6 +470,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "カタカナ".to_string(), // Katakana
+                surface_len: 4,
                 left_id: 2,
                 right_id: 2,
                 cost: 200,
@@ -473,6 +484,7 @@ mod fst_building_tests {
             },
             DictEntry {
                 surface: "漢字".to_string(), // Kanji
+                surface_len: 2,
                 left_id: 3,
                 right_id: 3,
                 cost: 300,

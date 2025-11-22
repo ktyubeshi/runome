@@ -89,6 +89,7 @@ fn parse_csv_files(mecab_dir: &Path, encoding: &str) -> Result<Vec<DictEntry>> {
 
             let entry = DictEntry {
                 surface: fields[0].to_string(),
+                surface_len: fields[0].chars().count() as u16,
                 left_id: fields[1].parse().context("Failed to parse left_id")?,
                 right_id: fields[2].parse().context("Failed to parse right_id")?,
                 cost: fields[3].parse().context("Failed to parse cost")?,

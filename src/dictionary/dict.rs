@@ -53,6 +53,28 @@ pub trait Dictionary {
         surface: &str,
         buffer: &mut Vec<&'a DictEntry>,
     ) -> Result<(), RunomeError> {
+        let mut index_ids = Vec::with_capacity(16);
+        self.lookup_into_with_index_buffer(surface, buffer, &mut index_ids)
+    }
+
+    /// Look up morphemes matching a surface form using provided buffers
+    ///
+    /// # Arguments
+    /// * `surface` - The surface form string to look up
+    /// * `buffer` - Buffer to append matching entries to
+    /// * `index_buffer` - Buffer to use for FST index lookups (avoids allocation)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Success
+    /// * `Err(RunomeError)` - Error if lookup fails
+    fn lookup_into_with_index_buffer<'a>(
+        &'a self,
+        surface: &str,
+        buffer: &mut Vec<&'a DictEntry>,
+        _index_buffer: &mut Vec<u64>,
+    ) -> Result<(), RunomeError> {
+        // Default implementation falls back to simple lookup if not overridden
+        // But in our case, all implementers should override this for performance
         let entries = self.lookup(surface)?;
         buffer.extend(entries);
         Ok(())
@@ -288,10 +310,11 @@ impl Dictionary for RAMDictionary {
         Ok(results)
     }
 
-    fn lookup_into<'a>(
+    fn lookup_into_with_index_buffer<'a>(
         &'a self,
         surface: &str,
         buffer: &mut Vec<&'a DictEntry>,
+        index_buffer: &mut Vec<u64>,
     ) -> Result<(), RunomeError> {
         // Handle empty string case
         if surface.is_empty() {
@@ -299,11 +322,8 @@ impl Dictionary for RAMDictionary {
         }
 
         // 1. Use matcher to get index IDs matching the surface form
-        // Use a small local buffer for indices to avoid allocation if possible
-        // Note: We allocate Vec<u64> here, but it's small and temporary.
-        // Ideally we'd pass this in too, but it's an internal detail.
-        let mut index_ids = Vec::with_capacity(16);
-        let matched = self.matcher.run_into(surface, true, &mut index_ids)?;
+        // Use provided buffer
+        let matched = self.matcher.run_into(surface, true, index_buffer)?;
 
         // 2. If no matches found, return
         if !matched {
@@ -315,11 +335,11 @@ impl Dictionary for RAMDictionary {
         let entries = self.resource.get_entries();
         
         // Reserve space if we can estimate
-        buffer.reserve(index_ids.len());
+        buffer.reserve(index_buffer.len());
 
         // 4. For each index ID, look up the morpheme IDs and resolve to entries
-        for index_id in index_ids {
-            let morpheme_ids = morpheme_index.get(index_id as usize);
+        for index_id in index_buffer.iter() {
+            let morpheme_ids = morpheme_index.get(*index_id as usize);
 
             for &morpheme_id in morpheme_ids {
                 // Validate morpheme ID is within bounds

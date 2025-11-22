@@ -1,5 +1,3 @@
-use std::collections::{HashMap, VecDeque};
-use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use bumpalo::Bump;
@@ -8,7 +6,6 @@ use crate::dictionary::{DictEntry, Dictionary};
 use crate::error::RunomeError;
 use crate::intern;
 
-const DEFAULT_COST_CACHE_SIZE: usize = 16_384;
 
 #[inline(always)]
 fn fast_surface_len(surface: &str) -> usize {
@@ -140,7 +137,7 @@ pub struct Node<'a> {
 impl<'a> Node<'a> {
     /// Create a new Node from a dictionary entry reference
     pub fn new(dict_entry: &'a DictEntry, node_type: NodeType) -> Self {
-        let surface_len = compute_surface_len(&dict_entry.surface);
+        let surface_len = dict_entry.surface_len as usize;
         Self {
             dict_entry,
             node_type,
@@ -851,78 +848,6 @@ impl<'a> LatticeNode for StartNode<'a> {
     }
 }
 
-/// Connection cost cache key - optimized for fast hashing
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CostCacheKey {
-    right_id: u16,
-    left_id: u16,
-}
-
-/// Fast hasher for small integer keys
-type FastHasher = BuildHasherDefault<fxhash::FxHasher>;
-
-/// Connection cost cache for frequently accessed cost lookups
-struct ConnectionCostCache {
-    cache: HashMap<CostCacheKey, i16, FastHasher>,
-    order: VecDeque<CostCacheKey>,
-    max_size: usize,
-}
-
-impl ConnectionCostCache {
-    fn new(max_size: usize) -> Self {
-        if max_size == 0 {
-            return Self {
-                cache: HashMap::with_hasher(FastHasher::default()),
-                order: VecDeque::new(),
-                max_size,
-            };
-        }
-
-        let capacity = max_size
-            .checked_next_power_of_two()
-            .unwrap_or(max_size)
-            .min(65_536);
-
-        Self {
-            cache: HashMap::with_capacity_and_hasher(capacity, FastHasher::default()),
-            order: VecDeque::with_capacity(max_size),
-            max_size,
-        }
-    }
-
-    fn get_or_compute<F>(
-        &mut self,
-        right_id: u16,
-        left_id: u16,
-        compute: F,
-    ) -> Result<i16, RunomeError>
-    where
-        F: FnOnce() -> Result<i16, RunomeError>,
-    {
-        let key = CostCacheKey { right_id, left_id };
-
-        if let Some(&cached_cost) = self.cache.get(&key) {
-            return Ok(cached_cost);
-        }
-
-        let cost = compute()?;
-
-        if self.max_size == 0 {
-            return Ok(cost);
-        }
-
-        if self.cache.len() >= self.max_size {
-            if let Some(oldest_key) = self.order.pop_front() {
-                self.cache.remove(&oldest_key);
-            }
-        }
-
-        self.cache.insert(key, cost);
-        self.order.push_back(key);
-        Ok(cost)
-    }
-}
-
 pub struct Lattice<'a, 'b> {
     /// Arena allocator for nodes
     arena: &'b Bump,
@@ -934,8 +859,6 @@ pub struct Lattice<'a, 'b> {
     p: usize,
     /// Dictionary reference for connection cost lookups
     dic: Arc<dyn Dictionary>,
-    /// High-performance connection cost cache for hot path optimization
-    cost_cache: ConnectionCostCache,
 }
 
 impl<'a, 'b> Lattice<'a, 'b> {
@@ -980,7 +903,6 @@ impl<'a, 'b> Lattice<'a, 'b> {
             enodes,
             p: 1, // Start at position 1 (after BOS)
             dic,
-            cost_cache: ConnectionCostCache::new(DEFAULT_COST_CACHE_SIZE),
         }
     }
 
@@ -1107,11 +1029,7 @@ impl<'a, 'b> Lattice<'a, 'b> {
         if end_nodes.len() == 1 {
             // Hot path specialization: single predecessor (most common case)
             let enode = &end_nodes[0];
-            let connection_cost =
-                self.cost_cache
-                    .get_or_compute(enode.right_id, node_left_id, || {
-                        self.dic.get_trans_cost(enode.right_id, node_left_id)
-                    })?;
+            let connection_cost = self.dic.get_trans_cost(enode.right_id, node_left_id)?;
 
             let total_cost = enode
                 .min_cost
@@ -1122,14 +1040,10 @@ impl<'a, 'b> Lattice<'a, 'b> {
                 best_compact_node = Some(enode);
             }
         } else {
-            // Multiple predecessors: optimized loop with cached costs and inlined data
+            // Multiple predecessors: optimized loop with direct costs and inlined data
             for enode in end_nodes {
-                // Calculate connection cost using cached lookup (major optimization)
-                let connection_cost =
-                    self.cost_cache
-                        .get_or_compute(enode.right_id, node_left_id, || {
-                            self.dic.get_trans_cost(enode.right_id, node_left_id)
-                        })?;
+                // Calculate connection cost directly
+                let connection_cost = self.dic.get_trans_cost(enode.right_id, node_left_id)?;
 
                 let total_cost = enode
                     .min_cost
@@ -1376,6 +1290,7 @@ mod tests {
     fn create_test_dict_entry() -> DictEntry {
         DictEntry {
             surface: "テスト".to_string(),
+            surface_len: 3,
             left_id: 100,
             right_id: 200,
             cost: 150,
@@ -1497,6 +1412,7 @@ mod tests {
         // Test ASCII
         let dict_entry_ascii = DictEntry {
             surface: "test".to_string(),
+            surface_len: 4,
             left_id: 1,
             right_id: 1,
             cost: 1,
@@ -1514,6 +1430,7 @@ mod tests {
         // Test Japanese (multi-byte UTF-8)
         let dict_entry_jp = DictEntry {
             surface: "こんにちは".to_string(),
+            surface_len: 5,
             left_id: 1,
             right_id: 1,
             cost: 1,

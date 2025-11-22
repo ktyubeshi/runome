@@ -231,16 +231,24 @@ impl CategoryIndex {
     fn category_mask_for_char(&self, ch: char) -> CategoryMask {
         let cp = ch as u32;
         let mut mask = CategoryMask::empty();
-        for entry in &self.code_ranges {
-            if cp < entry.start {
-                break;
+
+        // Find the first entry where start > cp
+        // All matches must be before this index
+        let limit = self.code_ranges.partition_point(|entry| entry.start <= cp);
+
+        // Scan backwards from limit
+        // We use a heuristic limit to avoid scanning back to 0 for large codepoints
+        // We assume matching ranges are clustered near the partition point (e.g. Kanji, Kanjinumeric)
+        // 32 items should be sufficient for standard dictionaries
+        let start_idx = limit.saturating_sub(32);
+        
+        for entry in self.code_ranges[start_idx..limit].iter().rev() {
+            if entry.end >= cp {
+                mask.insert(entry.primary_id);
+                mask = mask.union(entry.compat_mask);
             }
-            if cp > entry.end {
-                continue;
-            }
-            mask.insert(entry.primary_id);
-            mask = mask.union(entry.compat_mask);
         }
+
         if mask.is_empty() {
             if let Some(default_id) = self.default_id {
                 mask.insert(default_id);
@@ -256,15 +264,16 @@ impl CategoryIndex {
     fn matches(&self, ch: char) -> Vec<(CategoryId, CategoryMask)> {
         let cp = ch as u32;
         let mut matches = Vec::new();
-        for entry in &self.code_ranges {
-            if cp < entry.start {
-                break;
+        
+        let limit = self.code_ranges.partition_point(|entry| entry.start <= cp);
+        let start_idx = limit.saturating_sub(32);
+
+        for entry in self.code_ranges[start_idx..limit].iter().rev() {
+            if entry.end >= cp {
+                matches.push((entry.primary_id, entry.compat_mask));
             }
-            if cp > entry.end {
-                continue;
-            }
-            matches.push((entry.primary_id, entry.compat_mask));
         }
+
         if matches.is_empty() {
             if let Some(default_id) = self.default_id {
                 matches.push((default_id, CategoryMask::empty()));

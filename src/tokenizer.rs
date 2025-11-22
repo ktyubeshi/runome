@@ -271,6 +271,7 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
+    #[allow(dead_code)]
     fn surface_len_with_limit(surface: &str, limit: usize) -> Option<usize> {
         if limit == 0 {
             return None;
@@ -294,7 +295,7 @@ impl Tokenizer {
         let mut emitted = false;
 
         for entry in entries.iter().copied() {
-            if Self::surface_len_with_limit(&entry.surface, max_char_len).is_none() {
+            if (entry.surface_len as usize) > max_char_len {
                 continue;
             }
 
@@ -484,6 +485,7 @@ impl Tokenizer {
         debug_assert_eq!(char_categories_cache.len(), total_chars);
 
         let mut entries_buffer = Vec::with_capacity(64);
+        let mut index_buffer = Vec::with_capacity(16);
 
         while char_pos < total_chars {
             let mut matched = false;
@@ -498,7 +500,11 @@ impl Tokenizer {
                 // 1. User dictionary has precedence
                 if let Some(user_dic) = &self.user_dic {
                     entries_buffer.clear();
-                    if let Ok(()) = user_dic.lookup_into(search_slice, &mut entries_buffer) {
+                    if let Ok(()) = user_dic.lookup_into_with_index_buffer(
+                        search_slice,
+                        &mut entries_buffer,
+                        &mut index_buffer,
+                    ) {
                         if !entries_buffer.is_empty()
                             && Self::emit_dictionary_entries(
                                 lattice,
@@ -514,7 +520,11 @@ impl Tokenizer {
 
                 // 2. System dictionary lookup
                 entries_buffer.clear();
-                if let Ok(()) = self.sys_dic.lookup_into(search_slice, &mut entries_buffer) {
+                if let Ok(()) = self.sys_dic.lookup_into_with_index_buffer(
+                    search_slice,
+                    &mut entries_buffer,
+                    &mut index_buffer,
+                ) {
                     if !entries_buffer.is_empty()
                         && Self::emit_dictionary_entries(
                             lattice,

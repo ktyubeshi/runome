@@ -409,6 +409,16 @@ impl Dictionary for SystemDictionary {
     ) -> Result<(), RunomeError> {
         self.ram_dict.lookup_into(surface, buffer)
     }
+
+    fn lookup_into_with_index_buffer<'a>(
+        &'a self,
+        surface: &str,
+        buffer: &mut Vec<&'a DictEntry>,
+        index_buffer: &mut Vec<u64>,
+    ) -> Result<(), RunomeError> {
+        self.ram_dict
+            .lookup_into_with_index_buffer(surface, buffer, index_buffer)
+    }
 }
 
 #[cfg(test)]

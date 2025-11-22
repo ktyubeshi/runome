@@ -173,6 +173,7 @@ impl UserDictionary {
 
         Ok(DictEntry {
             surface: fields[0].to_string(),
+            surface_len: fields[0].chars().count() as u16,
             left_id: fields[1]
                 .parse::<u16>()
                 .map_err(|e| RunomeError::CsvParseError {
@@ -217,6 +218,7 @@ impl UserDictionary {
 
         Ok(DictEntry {
             surface: surface.clone(),
+            surface_len: surface.chars().count() as u16,
             left_id: 0,
             right_id: 0,
             cost: -32000,
@@ -327,10 +329,11 @@ impl Dictionary for UserDictionary {
             .ok_or(RunomeError::InvalidConnectionId { left_id, right_id })
     }
 
-    fn lookup_into<'a>(
+    fn lookup_into_with_index_buffer<'a>(
         &'a self,
         surface: &str,
         buffer: &mut Vec<&'a DictEntry>,
+        index_ids: &mut Vec<u64>,
     ) -> Result<(), RunomeError> {
         // Handle empty string case
         if surface.is_empty() {
@@ -338,8 +341,7 @@ impl Dictionary for UserDictionary {
         }
 
         // 1. Use matcher to get index IDs matching the surface form
-        let mut index_ids = Vec::with_capacity(16);
-        let matched = self.matcher.run_into(surface, true, &mut index_ids)?;
+        let matched = self.matcher.run_into(surface, true, index_ids)?;
 
         // 2. If no matches found, return empty vector
         if !matched {
@@ -347,8 +349,8 @@ impl Dictionary for UserDictionary {
         }
 
         // 3. For each index ID, look up the morpheme IDs and resolve to entries
-        for index_id in index_ids {
-            let morpheme_ids = self.lookup_morpheme_ids(index_id);
+        for index_id in index_ids.iter() {
+            let morpheme_ids = self.lookup_morpheme_ids(*index_id);
 
             for morpheme_id in morpheme_ids {
                 // Validate morpheme ID is within bounds
