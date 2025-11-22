@@ -18,6 +18,7 @@ pub enum UserDictFormat {
 /// Supports loading CSV files in both IPADIC and simplified formats,
 /// building FST for efficient lookup, and integrating with the tokenizer.
 /// Uses the same pattern as system dictionary for handling multiple morpheme IDs.
+#[derive(Debug)]
 pub struct UserDictionary {
     entries: Vec<DictEntry>,       // All user dictionary entries
     morpheme_index: Vec<Vec<u32>>, // Maps FST index IDs to morpheme ID vectors
@@ -362,6 +363,51 @@ impl Dictionary for UserDictionary {
         }
 
         Ok(())
+    }
+}
+
+impl UserDictionary {
+    /// Look up morphemes matching a surface form returning entries and their indices
+    pub fn lookup_entries_with_indices<'a>(
+        &'a self,
+        surface: &str,
+        entries_buffer: &mut Vec<&'a DictEntry>,
+        indices_buffer: &mut Vec<u32>,
+        fst_index_buffer: &mut Vec<u64>,
+    ) -> Result<(), RunomeError> {
+        // Handle empty string case
+        if surface.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Use matcher to get index IDs matching the surface form
+        let matched = self.matcher.run_into(surface, true, fst_index_buffer)?;
+
+        // 2. If no matches found, return empty vector
+        if !matched {
+            return Ok(());
+        }
+
+        // 3. For each index ID, look up the morpheme IDs and resolve to entries
+        for index_id in fst_index_buffer.iter() {
+            let morpheme_ids = self.lookup_morpheme_ids(*index_id);
+
+            for morpheme_id in morpheme_ids {
+                // Validate morpheme ID is within bounds
+                if let Some(entry) = self.entries.get(morpheme_id as usize) {
+                    // Entry is already a DictEntry - no conversion needed
+                    entries_buffer.push(entry);
+                    indices_buffer.push(morpheme_id);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get dictionary entry by index
+    pub fn get_entry(&self, index: usize) -> Option<&DictEntry> {
+        self.entries.get(index)
     }
 }
 

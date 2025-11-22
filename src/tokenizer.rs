@@ -13,19 +13,73 @@ use crate::lattice::{Lattice, LatticeNode, Node, NodeType, StartNode};
 const MAX_CHUNK_SIZE: usize = 1024;
 const CHUNK_SIZE: usize = 500;
 
+/// Data storage for Token
+/// Used to optimize memory usage by lazily loading dictionary data
+#[derive(Debug, Clone)]
+enum TokenData {
+    /// Fully owned token data (e.g., created manually or from Unknown nodes)
+    Owned {
+        part_of_speech: Cow<'static, str>,
+        infl_type: Cow<'static, str>,
+        infl_form: Cow<'static, str>,
+        base_form: Cow<'static, str>,
+        reading: Cow<'static, str>,
+        phonetic: Cow<'static, str>,
+    },
+    /// Lazy system dictionary reference
+    LazySys {
+        dic: Arc<SystemDictionary>,
+        index: u32,
+    },
+    /// Lazy user dictionary reference
+    LazyUser {
+        dic: Arc<UserDictionary>,
+        index: u32,
+    },
+}
+
+impl PartialEq for TokenData {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                TokenData::Owned {
+                    part_of_speech: p1,
+                    infl_type: i1,
+                    infl_form: f1,
+                    base_form: b1,
+                    reading: r1,
+                    phonetic: ph1,
+                },
+                TokenData::Owned {
+                    part_of_speech: p2,
+                    infl_type: i2,
+                    infl_form: f2,
+                    base_form: b2,
+                    reading: r2,
+                    phonetic: ph2,
+                },
+            ) => p1 == p2 && i1 == i2 && f1 == f2 && b1 == b2 && r1 == r2 && ph1 == ph2,
+            (
+                TokenData::LazySys { dic: d1, index: i1 },
+                TokenData::LazySys { dic: d2, index: i2 },
+            ) => Arc::ptr_eq(d1, d2) && i1 == i2,
+            (
+                TokenData::LazyUser { dic: d1, index: i1 },
+                TokenData::LazyUser { dic: d2, index: i2 },
+            ) => Arc::ptr_eq(d1, d2) && i1 == i2,
+            _ => false,
+        }
+    }
+}
+
 /// Token struct containing all morphological information
 /// Mirrors the Python Token class with complete compatibility
 /// Uses Cow<str> for zero-copy optimization when strings can reference static/interned data
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     surface: Cow<'static, str>,
-    part_of_speech: Cow<'static, str>,
-    infl_type: Cow<'static, str>,
-    infl_form: Cow<'static, str>,
-    base_form: Cow<'static, str>,
-    reading: Cow<'static, str>,
-    phonetic: Cow<'static, str>,
     node_type: NodeType,
+    data: TokenData,
 }
 
 fn normalize_inflection(value: &str) -> Cow<'static, str> {
@@ -40,16 +94,59 @@ impl Token {
     /// Create a Token from a dictionary node with full morphological information
     /// Uses zero-copy optimization for interned strings
     pub fn from_dict_node<N: LatticeNode + ?Sized>(node: &N) -> Self {
+        // Legacy method kept for compatibility and testing
+        // Creates an Owned token by default
         Self {
             surface: intern::intern_or_cow(node.surface()),
-            part_of_speech: intern::intern_or_cow(node.part_of_speech()),
-            infl_type: normalize_inflection(node.inflection_type()),
-            infl_form: normalize_inflection(node.inflection_form()),
-            base_form: intern::intern_or_cow(node.base_form()),
-            reading: intern::intern_or_cow(node.reading()),
-            phonetic: intern::intern_or_cow(node.phonetic()),
             node_type: node.node_type(),
+            data: TokenData::Owned {
+                part_of_speech: intern::intern_or_cow(node.part_of_speech()),
+                infl_type: normalize_inflection(node.inflection_type()),
+                infl_form: normalize_inflection(node.inflection_form()),
+                base_form: intern::intern_or_cow(node.base_form()),
+                reading: intern::intern_or_cow(node.reading()),
+                phonetic: intern::intern_or_cow(node.phonetic()),
+            },
         }
+    }
+
+    /// Create a Token from a dictionary node potentially using lazy loading
+    pub fn from_node_lazy<N: LatticeNode + ?Sized>(
+        node: &N,
+        sys_dic: &Arc<SystemDictionary>,
+        user_dic: Option<&Arc<UserDictionary>>,
+    ) -> Self {
+        // Check if we can use lazy loading
+        if let Some(index) = node.entry_index() {
+            match node.node_type() {
+                NodeType::SysDict => {
+                    return Self {
+                        surface: intern::intern_or_cow(node.surface()),
+                        node_type: NodeType::SysDict,
+                        data: TokenData::LazySys {
+                            dic: sys_dic.clone(),
+                            index,
+                        },
+                    };
+                }
+                NodeType::UserDict => {
+                    if let Some(udic) = user_dic {
+                        return Self {
+                            surface: intern::intern_or_cow(node.surface()),
+                            node_type: NodeType::UserDict,
+                            data: TokenData::LazyUser {
+                                dic: udic.clone(),
+                                index,
+                            },
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Fallback to owned token
+        Self::from_dict_node(node)
     }
 
     /// Create a Token from an unknown word node
@@ -63,13 +160,15 @@ impl Token {
 
         Self {
             surface: intern::intern_or_cow(node.surface()),
-            part_of_speech: intern::intern_or_cow(node.part_of_speech()),
-            infl_type: Cow::Borrowed(intern::ASTERISK),
-            infl_form: Cow::Borrowed(intern::ASTERISK),
-            base_form,
-            reading: intern::intern_or_cow(node.reading()),
-            phonetic: intern::intern_or_cow(node.phonetic()),
             node_type: node.node_type(),
+            data: TokenData::Owned {
+                part_of_speech: intern::intern_or_cow(node.part_of_speech()),
+                infl_type: Cow::Borrowed(intern::ASTERISK),
+                infl_form: Cow::Borrowed(intern::ASTERISK),
+                base_form,
+                reading: intern::intern_or_cow(node.reading()),
+                phonetic: intern::intern_or_cow(node.phonetic()),
+            },
         }
     }
 
@@ -89,13 +188,15 @@ impl Token {
     ) -> Self {
         Self {
             surface: intern::intern_or_cow(&surface),
-            part_of_speech: intern::intern_or_cow(&part_of_speech),
-            infl_type: normalize_inflection(&infl_type),
-            infl_form: normalize_inflection(&infl_form),
-            base_form: intern::intern_or_cow(&base_form),
-            reading: intern::intern_or_cow(&reading),
-            phonetic: intern::intern_or_cow(&phonetic),
             node_type,
+            data: TokenData::Owned {
+                part_of_speech: intern::intern_or_cow(&part_of_speech),
+                infl_type: normalize_inflection(&infl_type),
+                infl_form: normalize_inflection(&infl_form),
+                base_form: intern::intern_or_cow(&base_form),
+                reading: intern::intern_or_cow(&reading),
+                phonetic: intern::intern_or_cow(&phonetic),
+            },
         }
     }
 
@@ -105,28 +206,130 @@ impl Token {
         &self.surface
     }
 
-    pub fn part_of_speech(&self) -> &str {
-        &self.part_of_speech
+    pub fn part_of_speech(&self) -> Cow<'_, str> {
+        match &self.data {
+            TokenData::Owned { part_of_speech, .. } => part_of_speech.clone(),
+            TokenData::LazySys { dic, index } => {
+                let entries = dic.get_resource().get_entries();
+                if let Some(entry) = entries.get(*index as usize) {
+                    intern::intern_or_cow(&entry.part_of_speech)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+            TokenData::LazyUser { dic, index } => {
+                if let Some(entry) = dic.get_entry(*index as usize) {
+                    intern::intern_or_cow(&entry.part_of_speech)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+        }
     }
 
-    pub fn infl_type(&self) -> &str {
-        &self.infl_type
+    pub fn infl_type(&self) -> Cow<'_, str> {
+        match &self.data {
+            TokenData::Owned { infl_type, .. } => infl_type.clone(),
+            TokenData::LazySys { dic, index } => {
+                let entries = dic.get_resource().get_entries();
+                if let Some(entry) = entries.get(*index as usize) {
+                    normalize_inflection(&entry.inflection_type)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+            TokenData::LazyUser { dic, index } => {
+                if let Some(entry) = dic.get_entry(*index as usize) {
+                    normalize_inflection(&entry.inflection_type)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+        }
     }
 
-    pub fn infl_form(&self) -> &str {
-        &self.infl_form
+    pub fn infl_form(&self) -> Cow<'_, str> {
+        match &self.data {
+            TokenData::Owned { infl_form, .. } => infl_form.clone(),
+            TokenData::LazySys { dic, index } => {
+                let entries = dic.get_resource().get_entries();
+                if let Some(entry) = entries.get(*index as usize) {
+                    normalize_inflection(&entry.inflection_form)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+            TokenData::LazyUser { dic, index } => {
+                if let Some(entry) = dic.get_entry(*index as usize) {
+                    normalize_inflection(&entry.inflection_form)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+        }
     }
 
-    pub fn base_form(&self) -> &str {
-        &self.base_form
+    pub fn base_form(&self) -> Cow<'_, str> {
+        match &self.data {
+            TokenData::Owned { base_form, .. } => base_form.clone(),
+            TokenData::LazySys { dic, index } => {
+                let entries = dic.get_resource().get_entries();
+                if let Some(entry) = entries.get(*index as usize) {
+                    intern::intern_or_cow(&entry.base_form)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+            TokenData::LazyUser { dic, index } => {
+                if let Some(entry) = dic.get_entry(*index as usize) {
+                    intern::intern_or_cow(&entry.base_form)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+        }
     }
 
-    pub fn reading(&self) -> &str {
-        &self.reading
+    pub fn reading(&self) -> Cow<'_, str> {
+        match &self.data {
+            TokenData::Owned { reading, .. } => reading.clone(),
+            TokenData::LazySys { dic, index } => {
+                let entries = dic.get_resource().get_entries();
+                if let Some(entry) = entries.get(*index as usize) {
+                    intern::intern_or_cow(&entry.reading)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+            TokenData::LazyUser { dic, index } => {
+                if let Some(entry) = dic.get_entry(*index as usize) {
+                    intern::intern_or_cow(&entry.reading)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+        }
     }
 
-    pub fn phonetic(&self) -> &str {
-        &self.phonetic
+    pub fn phonetic(&self) -> Cow<'_, str> {
+        match &self.data {
+            TokenData::Owned { phonetic, .. } => phonetic.clone(),
+            TokenData::LazySys { dic, index } => {
+                let entries = dic.get_resource().get_entries();
+                if let Some(entry) = entries.get(*index as usize) {
+                    intern::intern_or_cow(&entry.phonetic)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+            TokenData::LazyUser { dic, index } => {
+                if let Some(entry) = dic.get_entry(*index as usize) {
+                    intern::intern_or_cow(&entry.phonetic)
+                } else {
+                    Cow::Borrowed(intern::ASTERISK)
+                }
+            }
+        }
     }
 
     pub fn node_type(&self) -> NodeType {
@@ -141,13 +344,13 @@ impl fmt::Display for Token {
         write!(
             f,
             "{}\t{},{},{},{},{},{}",
-            self.surface,
-            self.part_of_speech,
-            self.infl_type,
-            self.infl_form,
-            self.base_form,
-            self.reading,
-            self.phonetic
+            self.surface(),
+            self.part_of_speech(),
+            self.infl_type(),
+            self.infl_form(),
+            self.base_form(),
+            self.reading(),
+            self.phonetic()
         )
     }
 }
@@ -289,17 +492,20 @@ impl Tokenizer {
     fn emit_dictionary_entries<'a, 'b>(
         lattice: &mut Lattice<'a, 'b>,
         entries: &[&'a DictEntry],
+        indices: &[u32],
         node_type: NodeType,
         max_char_len: usize,
     ) -> Result<bool, RunomeError> {
         let mut emitted = false;
 
-        for entry in entries.iter().copied() {
+        for (i, entry) in entries.iter().enumerate() {
             if (entry.surface_len as usize) > max_char_len {
                 continue;
             }
 
-            let start_node = StartNode::Dict(Node::new(entry, node_type));
+            // Pass the index if available
+            let entry_index = indices.get(i).copied();
+            let start_node = StartNode::Dict(Node::new(entry, entry_index, node_type));
             lattice.add(start_node)?;
             emitted = true;
         }
@@ -485,7 +691,8 @@ impl Tokenizer {
         debug_assert_eq!(char_categories_cache.len(), total_chars);
 
         let mut entries_buffer = Vec::with_capacity(64);
-        let mut index_buffer = Vec::with_capacity(16);
+        let mut indices_buffer = Vec::with_capacity(64); // Buffer for entry indices
+        let mut index_buffer = Vec::with_capacity(16); // Buffer for FST lookups
 
         while char_pos < total_chars {
             let mut matched = false;
@@ -500,15 +707,18 @@ impl Tokenizer {
                 // 1. User dictionary has precedence
                 if let Some(user_dic) = &self.user_dic {
                     entries_buffer.clear();
-                    if let Ok(()) = user_dic.lookup_into_with_index_buffer(
+                    indices_buffer.clear();
+                    if let Ok(()) = user_dic.lookup_entries_with_indices(
                         search_slice,
                         &mut entries_buffer,
+                        &mut indices_buffer,
                         &mut index_buffer,
                     ) {
                         if !entries_buffer.is_empty()
                             && Self::emit_dictionary_entries(
                                 lattice,
                                 &entries_buffer,
+                                &indices_buffer,
                                 NodeType::UserDict,
                                 max_char_len,
                             )?
@@ -520,15 +730,18 @@ impl Tokenizer {
 
                 // 2. System dictionary lookup
                 entries_buffer.clear();
-                if let Ok(()) = self.sys_dic.lookup_into_with_index_buffer(
+                indices_buffer.clear();
+                if let Ok(()) = self.sys_dic.lookup_entries_with_indices(
                     search_slice,
                     &mut entries_buffer,
+                    &mut indices_buffer,
                     &mut index_buffer,
                 ) {
                     if !entries_buffer.is_empty()
                         && Self::emit_dictionary_entries(
                             lattice,
                             &entries_buffer,
+                            &indices_buffer,
                             NodeType::SysDict,
                             max_char_len,
                         )?
@@ -608,8 +821,10 @@ impl Tokenizer {
         let category_max_length = self.sys_dic.unknown_length_id(category_id);
         let max_length = if self.sys_dic.unknown_grouping_id(category_id) {
             self.max_unknown_length
+        } else if category_max_length < 0 {
+            self.max_unknown_length
         } else {
-            std::cmp::min(category_max_length, self.max_unknown_length)
+            std::cmp::min(category_max_length as usize, self.max_unknown_length)
         };
 
         let mut current_len = 1;
@@ -681,10 +896,12 @@ impl Tokenizer {
                     node.surface(),
                 )));
             } else {
+                // Use new Lazy token creation if possible
                 let token = match node.node_type() {
-                    NodeType::SysDict => Token::from_dict_node(node),
+                    NodeType::SysDict | NodeType::UserDict => {
+                        Token::from_node_lazy(node, &self.sys_dic, self.user_dic.as_ref())
+                    },
                     NodeType::Unknown => Token::from_unknown_node(node, baseform_unk),
-                    NodeType::UserDict => Token::from_dict_node(node),
                 };
                 tokens.push(TokenizeResult::Token(token));
             }

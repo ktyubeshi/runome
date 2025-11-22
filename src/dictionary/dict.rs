@@ -103,6 +103,12 @@ pub struct Matcher {
     fst: FstBacking,
 }
 
+impl std::fmt::Debug for Matcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Matcher").finish()
+    }
+}
+
 impl Matcher {
     /// Create new Matcher from FST bytes
     ///
@@ -257,6 +263,7 @@ impl Matcher {
 ///
 /// Combines dictionary data storage (DictionaryResource) with FST-based
 /// string matching (Matcher) to provide efficient morpheme lookup.
+#[derive(Debug)]
 pub struct RAMDictionary {
     resource: DictionaryResource,
     matcher: Matcher,
@@ -300,6 +307,64 @@ impl RAMDictionary {
     /// * `ConnectionMatrix` - Shared reference to connection matrix
     pub fn connection_matrix(&self) -> ConnectionMatrix {
         self.resource.connection_matrix()
+    }
+
+    /// Look up morphemes matching a surface form returning entries and their indices
+    ///
+    /// # Arguments
+    /// * `surface` - The surface form string to look up
+    /// * `entries_buffer` - Buffer to append matching entries to
+    /// * `indices_buffer` - Buffer to append matching morpheme indices to
+    /// * `fst_index_buffer` - Buffer to use for FST index lookups (avoids allocation)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Success
+    /// * `Err(RunomeError)` - Error if lookup fails
+    pub fn lookup_entries_with_indices<'a>(
+        &'a self,
+        surface: &str,
+        entries_buffer: &mut Vec<&'a DictEntry>,
+        indices_buffer: &mut Vec<u32>,
+        fst_index_buffer: &mut Vec<u64>,
+    ) -> Result<(), RunomeError> {
+        // Handle empty string case
+        if surface.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Use matcher to get index IDs matching the surface form
+        let matched = self.matcher.run_into(surface, true, fst_index_buffer)?;
+
+        // 2. If no matches found, return
+        if !matched {
+            return Ok(());
+        }
+
+        // 3. Get morpheme index and dictionary entries
+        let morpheme_index = self.resource.morpheme_index_view();
+        let entries = self.resource.get_entries();
+
+        // Reserve space if we can estimate
+        entries_buffer.reserve(fst_index_buffer.len());
+        indices_buffer.reserve(fst_index_buffer.len());
+
+        // 4. For each index ID, look up the morpheme IDs and resolve to entries
+        for index_id in fst_index_buffer.iter() {
+            let morpheme_ids = morpheme_index.get(*index_id as usize);
+
+            for &morpheme_id in morpheme_ids {
+                // Validate morpheme ID is within bounds
+                if let Some(entry) = entries.get(morpheme_id as usize) {
+                    // Filter out entries with empty surface forms
+                    if !entry.surface.is_empty() {
+                        entries_buffer.push(entry);
+                        indices_buffer.push(morpheme_id);
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

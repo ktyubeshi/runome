@@ -12,6 +12,7 @@ use crate::error::RunomeError;
 /// This provides the primary interface for Japanese morphological analysis,
 /// integrating dictionary lookups for known words with character-based
 /// classification for unknown word processing.
+#[derive(Debug)]
 pub struct SystemDictionary {
     /// RAM-based dictionary for known word lookup
     ram_dict: RAMDictionary,
@@ -21,6 +22,54 @@ pub struct SystemDictionary {
 static SYSTEM_DICT_INSTANCE: OnceCell<Arc<SystemDictionary>> = OnceCell::new();
 
 impl SystemDictionary {
+    /// Get reference to the embedded DictionaryResource
+    pub fn get_resource(&self) -> &DictionaryResource {
+        self.ram_dict.get_resource()
+    }
+
+    pub(crate) fn get_char_category_mask(&self, ch: char) -> CategoryMask {
+        self.get_resource().get_char_category_mask(ch)
+    }
+
+    pub fn get_char_categories(&self, ch: char) -> std::collections::HashMap<String, Vec<String>> {
+        self.get_resource().get_char_categories(ch)
+    }
+
+    pub(crate) fn get_char_categories_result(
+        &self,
+        ch: char,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, RunomeError> {
+        Ok(self.get_resource().get_char_categories(ch))
+    }
+
+    pub(crate) fn unknown_invoked_always_id(&self, id: u16) -> bool {
+        self.get_resource().unknown_invoked_always_by_id(id)
+    }
+
+    pub fn unknown_invoked_always(&self, category: &str) -> bool {
+        self.get_resource().unknown_invoked_always(category)
+    }
+
+    pub fn unknown_grouping(&self, category: &str) -> bool {
+        self.get_resource().unknown_grouping(category)
+    }
+
+    pub fn unknown_length(&self, category: &str) -> i32 {
+        self.get_resource().unknown_length(category)
+    }
+
+    pub(crate) fn get_unknown_entries_by_id(&self, id: u16) -> Option<&[UnknownEntry]> {
+        self.get_resource().get_unknown_entries_by_id(id)
+    }
+
+    pub(crate) fn unknown_length_id(&self, id: u16) -> i32 {
+        self.get_resource().unknown_length_by_id(id)
+    }
+
+    pub(crate) fn unknown_grouping_id(&self, id: u16) -> bool {
+        self.get_resource().unknown_grouping_by_id(id)
+    }
+
     /// Get the sysdic path, trying bundled location first, then relative path
     ///
     /// # Returns
@@ -179,220 +228,27 @@ impl SystemDictionary {
     ///
     /// # Returns
     /// * `ConnectionMatrix` - Shared reference to connection matrix
-    pub fn connection_matrix(&self) -> ConnectionMatrix {
+    pub fn connection_matrix(&self) -> crate::dictionary::ConnectionMatrix {
         self.ram_dict.connection_matrix()
     }
 
-    /// Get character categories for a given character
-    ///
-    /// Returns all character categories that match the given character,
-    /// including both primary and compatible categories.
-    ///
-    /// # Arguments
-    /// * `ch` - Character to classify
-    ///
-    /// # Returns
-    /// HashMap mapping category names to compatible category lists
-    pub fn get_char_categories(&self, ch: char) -> HashMap<String, Vec<String>> {
-        self.ram_dict.get_resource().get_char_categories(ch)
-    }
-
-    /// Check if unknown word processing should always be invoked for category
-    ///
-    /// # Arguments
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// True if unknown word processing should always be invoked
-    pub fn unknown_invoked_always(&self, category: &str) -> bool {
-        self.ram_dict
-            .get_resource()
-            .unknown_invoked_always(category)
-    }
-
-    pub fn unknown_invoked_always_id(&self, category: u16) -> bool {
-        self.ram_dict
-            .get_resource()
-            .unknown_invoked_always_by_id(category)
-    }
-
-    /// Check if characters of this category should be grouped together
-    ///
-    /// # Arguments  
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// True if consecutive characters should be grouped
-    pub fn unknown_grouping(&self, category: &str) -> bool {
-        self.ram_dict.get_resource().unknown_grouping(category)
-    }
-
-    pub fn unknown_grouping_id(&self, category: u16) -> bool {
-        self.ram_dict
-            .get_resource()
-            .unknown_grouping_by_id(category)
-    }
-
-    /// Get length constraint for unknown words of this category
-    ///
-    /// # Arguments
-    /// * `category` - Character category name  
-    ///
-    /// # Returns
-    /// Length constraint (-1 = no limit, positive = max length)
-    pub fn unknown_length(&self, category: &str) -> i32 {
-        self.ram_dict.get_resource().unknown_length(category)
-    }
-
-    pub fn unknown_length_id(&self, category: u16) -> usize {
-        let len = self.ram_dict.get_resource().unknown_length_by_id(category);
-        if len <= 0 { usize::MAX } else { len as usize }
-    }
-
-    /// Get unknown word entries for a character category
-    ///
-    /// Returns the list of unknown word templates for the given category.
-    /// These templates define the morphological properties (cost, part-of-speech, etc.)
-    /// for unknown words of this category.
-    ///
-    /// # Arguments
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// Option containing slice of unknown entries for this category
-    pub fn get_unknown_entries(
-        &self,
-        category: &str,
-    ) -> Option<&[crate::dictionary::UnknownEntry]> {
-        self.ram_dict.get_resource().get_unknown_entries(category)
-    }
-
-    pub fn get_unknown_entries_by_id(&self, category: u16) -> Option<&[UnknownEntry]> {
-        self.ram_dict
-            .get_resource()
-            .get_unknown_entries_by_id(category)
-    }
-
-    /// Get character categories for a given character (Result version)
-    ///
-    /// Returns the list of character categories that apply to the given character.
-    /// This is used for unknown word processing to determine how to handle
-    /// characters not found in the dictionary.
-    ///
-    /// # Arguments
-    /// * `c` - Character to classify
-    ///
-    /// # Returns
-    /// * `Ok(Vec<String>)` - Vector of category names that apply to this character
-    /// * `Err(RunomeError)` - Error if character classification fails
-    pub fn get_char_categories_result(&self, c: char) -> Result<Vec<String>, RunomeError> {
-        let mut result = Vec::new();
-        let mut found = false;
-
-        for (category, compat_categories) in self.ram_dict.get_resource().iter_char_categories(c) {
-            found = true;
-            result.push(category);
-            result.extend(compat_categories);
-        }
-
-        if !found {
-            result.push("DEFAULT".to_string());
-        }
-
-        Ok(result)
-    }
-
-    pub fn get_char_category_ids(&self, c: char) -> Vec<u16> {
-        self.ram_dict.get_resource().get_char_category_ids(c)
-    }
-
-    pub(crate) fn get_char_category_mask(&self, c: char) -> CategoryMask {
-        self.ram_dict.get_resource().get_char_category_mask(c)
-    }
-
-    pub fn category_name_by_id(&self, category: u16) -> &str {
-        self.ram_dict.get_resource().category_name_by_id(category)
-    }
-
-    pub fn category_id_by_name(&self, name: &str) -> Option<u16> {
-        self.ram_dict.get_resource().category_id_by_name(name)
-    }
-
-    /// Get unknown word entries for a character category (Result version)
-    ///
-    /// Returns the list of unknown word templates for the given category.
-    /// These templates define the morphological properties (cost, part-of-speech, etc.)
-    /// for unknown words of this category.
-    ///
-    /// # Arguments
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// * `Ok(Vec<&UnknownEntry>)` - Vector of unknown word entries for this category
-    /// * `Err(RunomeError)` - Error if category is not found
-    pub fn get_unknown_entries_result(
-        &self,
-        category: &str,
-    ) -> Result<&[UnknownEntry], RunomeError> {
-        self.get_unknown_entries(category)
-            .ok_or_else(|| RunomeError::DictValidationError {
-                reason: format!("Unknown category: {}", category),
-            })
-    }
-
-    /// Check if unknown word processing should always be invoked for this category (Result version)
-    ///
-    /// Returns true if unknown word processing should be performed even when
-    /// dictionary entries are found. This is used for categories like numbers
-    /// that may have both dictionary entries and unknown word processing.
-    ///
-    /// # Arguments
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// * `Ok(bool)` - True if unknown processing should always be invoked
-    /// * `Err(RunomeError)` - Error if category is not found
-    pub fn unknown_invoked_always_result(&self, category: &str) -> Result<bool, RunomeError> {
-        Ok(self.unknown_invoked_always(category))
-    }
-
-    /// Check if unknown words of this category should be grouped together (Result version)
-    ///
-    /// Returns true if consecutive characters of the same category should be
-    /// grouped into a single unknown word (e.g., "2009" instead of "2", "0", "0", "9").
-    ///
-    /// # Arguments
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// * `Ok(bool)` - True if characters should be grouped
-    /// * `Err(RunomeError)` - Error if category is not found
-    pub fn unknown_grouping_result(&self, category: &str) -> Result<bool, RunomeError> {
-        Ok(self.unknown_grouping(category))
-    }
-
-    /// Get the maximum length for unknown words of this category (Result version)
-    ///
-    /// Returns the maximum number of characters that can be grouped together
-    /// for unknown words of this category.
-    ///
-    /// # Arguments
-    /// * `category` - Character category name
-    ///
-    /// # Returns
-    /// * `Ok(usize)` - Maximum length for this category
-    /// * `Err(RunomeError)` - Error if category is not found
-    pub fn unknown_length_result(&self, category: &str) -> Result<usize, RunomeError> {
-        let length = self.unknown_length(category);
-        if length <= 0 {
-            Ok(usize::MAX) // -1 or 0 means no limit
-        } else {
-            Ok(length as usize)
-        }
+    /// Look up morphemes matching a surface form returning entries and their indices
+    pub fn lookup_entries_with_indices<'a>(
+        &'a self,
+        surface: &str,
+        entries_buffer: &mut Vec<&'a DictEntry>,
+        indices_buffer: &mut Vec<u32>,
+        fst_index_buffer: &mut Vec<u64>,
+    ) -> Result<(), RunomeError> {
+        self.ram_dict.lookup_entries_with_indices(
+            surface,
+            entries_buffer,
+            indices_buffer,
+            fst_index_buffer,
+        )
     }
 }
 
-/// Implement Dictionary trait through delegation to RAMDictionary
 impl Dictionary for SystemDictionary {
     fn lookup(&self, surface: &str) -> Result<Vec<&DictEntry>, RunomeError> {
         self.lookup(surface)

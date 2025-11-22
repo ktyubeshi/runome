@@ -116,6 +116,9 @@ pub trait LatticeNode: std::fmt::Debug {
     fn reading(&self) -> &str;
 
     fn phonetic(&self) -> &str;
+
+    /// Get the dictionary entry index if this node comes from a dictionary
+    fn entry_index(&self) -> Option<u32>;
 }
 
 /// Node backed by a dictionary entry reference (zero-copy for dictionary words)
@@ -123,6 +126,8 @@ pub trait LatticeNode: std::fmt::Debug {
 pub struct Node<'a> {
     /// Reference to dictionary entry (avoids copying morphological data)
     dict_entry: &'a DictEntry,
+    /// Index of this entry in the dictionary (for lazy loading)
+    entry_index: Option<u32>,
     node_type: NodeType,
     surface_len: usize,
 
@@ -136,10 +141,11 @@ pub struct Node<'a> {
 
 impl<'a> Node<'a> {
     /// Create a new Node from a dictionary entry reference
-    pub fn new(dict_entry: &'a DictEntry, node_type: NodeType) -> Self {
+    pub fn new(dict_entry: &'a DictEntry, entry_index: Option<u32>, node_type: NodeType) -> Self {
         let surface_len = dict_entry.surface_len as usize;
         Self {
             dict_entry,
+            entry_index,
             node_type,
             surface_len,
             min_cost: i32::MAX,
@@ -153,6 +159,11 @@ impl<'a> Node<'a> {
     /// Get the complete dictionary entry for this node
     pub fn dict_entry(&self) -> &DictEntry {
         self.dict_entry
+    }
+
+    /// Get the dictionary entry index (if available)
+    pub fn entry_index(&self) -> Option<u32> {
+        self.entry_index
     }
 }
 
@@ -247,6 +258,10 @@ impl<'a> LatticeNode for Node<'a> {
 
     fn phonetic(&self) -> &str {
         &self.dict_entry.phonetic
+    }
+
+    fn entry_index(&self) -> Option<u32> {
+        self.entry_index
     }
 }
 
@@ -445,6 +460,10 @@ impl<'a> LatticeNode for UnknownNode<'a> {
     fn phonetic(&self) -> &str {
         self.phonetic
     }
+
+    fn entry_index(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Beginning-of-sentence node
@@ -569,6 +588,10 @@ impl LatticeNode for BOS {
     fn phonetic(&self) -> &str {
         intern::EMPTY
     }
+
+    fn entry_index(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// End-of-sentence node
@@ -686,6 +709,10 @@ impl LatticeNode for EOS {
 
     fn phonetic(&self) -> &str {
         intern::EMPTY
+    }
+
+    fn entry_index(&self) -> Option<u32> {
+        None
     }
 }
 
@@ -845,6 +872,10 @@ impl<'a> LatticeNode for StartNode<'a> {
 
     fn phonetic(&self) -> &str {
         self.inner().phonetic()
+    }
+
+    fn entry_index(&self) -> Option<u32> {
+        self.inner().entry_index()
     }
 }
 
@@ -1307,7 +1338,7 @@ mod tests {
     #[test]
     fn test_node_creation() {
         let dict_entry = create_test_dict_entry();
-        let node = Node::new(&dict_entry, NodeType::SysDict);
+        let node = Node::new(&dict_entry, Some(123), NodeType::SysDict);
 
         assert_eq!(node.surface(), "テスト");
         assert_eq!(node.left_id(), 100);
@@ -1315,6 +1346,7 @@ mod tests {
         assert_eq!(node.cost(), 150);
         assert_eq!(node.node_type(), NodeType::SysDict);
         assert_eq!(node.surface_len(), 3); // 3 characters
+        assert_eq!(node.entry_index(), Some(123));
 
         // Check initial Viterbi values
         assert_eq!(node.min_cost(), i32::MAX);
@@ -1380,7 +1412,7 @@ mod tests {
     #[test]
     fn test_viterbi_field_updates() {
         let dict_entry = create_test_dict_entry();
-        let mut node = Node::new(&dict_entry, NodeType::SysDict);
+        let mut node = Node::new(&dict_entry, None, NodeType::SysDict);
 
         // Test updating Viterbi fields
         node.set_min_cost(1000);
@@ -1400,8 +1432,8 @@ mod tests {
     fn test_node_types() {
         let dict_entry = create_test_dict_entry();
 
-        let sys_node = Node::new(&dict_entry, NodeType::SysDict);
-        let user_node = Node::new(&dict_entry, NodeType::UserDict);
+        let sys_node = Node::new(&dict_entry, Some(1), NodeType::SysDict);
+        let user_node = Node::new(&dict_entry, Some(2), NodeType::UserDict);
 
         assert_eq!(sys_node.node_type(), NodeType::SysDict);
         assert_eq!(user_node.node_type(), NodeType::UserDict);
@@ -1424,7 +1456,7 @@ mod tests {
             phonetic: "".to_string(),
             morph_id: 1,
         };
-        let node_ascii = Node::new(&dict_entry_ascii, NodeType::SysDict);
+        let node_ascii = Node::new(&dict_entry_ascii, None, NodeType::SysDict);
         assert_eq!(node_ascii.surface_len(), 4);
 
         // Test Japanese (multi-byte UTF-8)
@@ -1442,7 +1474,7 @@ mod tests {
             phonetic: "".to_string(),
             morph_id: 2,
         };
-        let node_jp = Node::new(&dict_entry_jp, NodeType::SysDict);
+        let node_jp = Node::new(&dict_entry_jp, None, NodeType::SysDict);
         assert_eq!(node_jp.surface_len(), 5); // 5 characters, not bytes
     }
 
@@ -1918,7 +1950,7 @@ mod tests {
         let entries = entries_result.unwrap();
 
         for entry in &entries {
-            let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+            let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
             let add_result = lattice.add(node);
             assert!(add_result.is_ok(), "Adding node should succeed");
         }
@@ -1942,7 +1974,7 @@ mod tests {
             let substring_entries = substring_entries_result.unwrap();
 
             for entry in &substring_entries {
-                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+                let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding substring node should succeed");
             }
@@ -1973,7 +2005,7 @@ mod tests {
             let final_entries = final_entries_result.unwrap();
 
             for entry in &final_entries {
-                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+                let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding final node should succeed");
             }
@@ -2220,7 +2252,7 @@ mod tests {
         let entries = entries_result.unwrap();
 
         for entry in &entries {
-            let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+            let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
             let add_result = lattice.add(node);
             assert!(add_result.is_ok(), "Adding node should succeed");
         }
@@ -2282,7 +2314,7 @@ mod tests {
             let substring_entries = substring_entries_result.unwrap();
 
             for entry in &substring_entries {
-                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+                let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding substring node should succeed");
             }
@@ -2336,7 +2368,7 @@ mod tests {
             let final_entries = final_entries_result.unwrap();
 
             for entry in &final_entries {
-                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+                let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding final node should succeed");
             }
@@ -2585,7 +2617,7 @@ mod tests {
 
             // Add all entries to lattice
             for entry in &entries {
-                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+                let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding node should succeed");
             }
@@ -2667,7 +2699,7 @@ mod tests {
 
             // Python test: for e in entries: lattice.add(SurfaceNode(e))
             for entry in &entries {
-                let node = StartNode::Dict(Node::new(entry, NodeType::SysDict));
+                let node = StartNode::Dict(Node::new(entry, None, NodeType::SysDict));
                 let add_result = lattice.add(node);
                 assert!(add_result.is_ok(), "Adding node should succeed");
             }

@@ -638,6 +638,7 @@ impl<'a> ConnectionMatrixView<'a> {
 }
 
 /// Container for all dictionary resources
+#[derive(Debug)]
 pub struct DictionaryResource {
     entries: Vec<DictEntry>,
     connections: PackedConnectionMatrix,
